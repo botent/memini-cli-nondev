@@ -1,17 +1,12 @@
-//! Autonomous agent daemon — background tasks that run on schedules.
+//! Autonomous agent daemon — background tasks that run on schedules,
+//! plus live agent windows with streaming output and interactive input.
 //!
 //! Each [`DaemonTask`] wraps an agent persona, a prompt, and an interval.
 //! The daemon spawns tokio tasks that loop on their schedule, call the LLM,
 //! and push results back to the TUI via an [`mpsc`] channel.
 //!
-//! The user interacts through `/daemon` commands:
-//! - `/daemon list`          — show running and paused tasks
-//! - `/daemon run <name>`    — manually trigger a task now
-//! - `/daemon pause <name>`  — pause a scheduled task
-//! - `/daemon resume <name>` — resume it
-//! - `/daemon add <name> <interval> <prompt>` — create a new periodic task
-//! - `/daemon remove <name>` — remove a task
-//! - `/daemon results [name]` — show recent results
+//! Agent windows track real-time status (thinking/done/waiting) and stream
+//! output line-by-line so the user can watch the reasoning unfold.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,15 +21,65 @@ use crate::rice::RiceStore;
 
 // ── Public types ─────────────────────────────────────────────────────
 
-/// A message from a background agent to the TUI.
+/// The kind of event a background agent sends to the TUI.
 #[derive(Clone, Debug)]
-pub struct AgentEvent {
-    /// Name of the daemon task that produced this.
-    pub task_name: String,
-    /// Human-readable result text.
-    pub message: String,
-    /// Wall-clock timestamp.
-    pub timestamp: String,
+pub enum AgentEvent {
+    /// Agent has started work (show "thinking" spinner).
+    Started {
+        window_id: usize,
+    },
+    /// A progress line (streamed partial output / status update).
+    Progress {
+        window_id: usize,
+        line: String,
+    },
+    /// Agent finished successfully.
+    Finished {
+        window_id: usize,
+        message: String,
+        timestamp: String,
+    },
+    /// Agent needs user input to continue.
+    NeedsInput {
+        window_id: usize,
+        question: String,
+    },
+    /// Legacy: a simple result from a periodic daemon task.
+    DaemonResult {
+        task_name: String,
+        message: String,
+        timestamp: String,
+    },
+}
+
+/// Live state of an agent window in the side panel.
+#[derive(Clone, Debug)]
+pub struct AgentWindow {
+    /// Unique id (1-based, displayed as the keyboard shortcut).
+    pub id: usize,
+    /// Short label for the window header.
+    pub label: String,
+    /// The user's original prompt.
+    pub prompt: String,
+    /// Current status.
+    pub status: AgentWindowStatus,
+    /// Accumulated output lines (streamed in real time).
+    pub output_lines: Vec<String>,
+    /// If the agent asked for input, what it asked.
+    pub pending_question: Option<String>,
+    /// Scroll offset within this window (for long output).
+    pub scroll: u16,
+}
+
+/// Status of an agent window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentWindowStatus {
+    /// Agent is working (LLM call in flight).
+    Thinking,
+    /// Agent finished.
+    Done,
+    /// Agent needs user input.
+    WaitingForInput,
 }
 
 /// Persisted definition of a daemon task (stored in Rice).
@@ -127,7 +172,7 @@ pub fn spawn_task(
             }
 
             let Some(key) = &openai_key else {
-                let _ = tx.send(AgentEvent {
+                let _ = tx.send(AgentEvent::DaemonResult {
                     task_name: def_clone.name.clone(),
                     message: "No OpenAI key -- skipping.".to_string(),
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -179,7 +224,7 @@ pub fn spawn_task(
                 )
                 .await;
 
-            let _ = tx.send(AgentEvent {
+            let _ = tx.send(AgentEvent::DaemonResult {
                 task_name: def_clone.name.clone(),
                 message: output_text,
                 timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -212,7 +257,7 @@ pub fn spawn_oneshot(
         };
 
         let Some(key) = &openai_key else {
-            let _ = tx.send(AgentEvent {
+            let _ = tx.send(AgentEvent::DaemonResult {
                 task_name: def_clone.name.clone(),
                 message: "No OpenAI key -- skipping.".to_string(),
                 timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -262,10 +307,154 @@ pub fn spawn_oneshot(
             )
             .await;
 
-        let _ = tx.send(AgentEvent {
+        let _ = tx.send(AgentEvent::DaemonResult {
             task_name: def_clone.name.clone(),
             message: output_text,
             timestamp: Local::now().format("%H:%M:%S").to_string(),
         });
+    });
+}
+
+// ── Spawn an agent window (streaming, interactive) ───────────────────
+
+/// Spawn a one-shot agent that streams progress into an [`AgentWindow`].
+///
+/// Sends `Started`, then `Progress` lines as it works, then `Finished`.
+/// The window_id must already be allocated by the caller.
+pub fn spawn_agent_window(
+    window_id: usize,
+    persona: String,
+    prompt: String,
+    tx: mpsc::UnboundedSender<AgentEvent>,
+    openai: OpenAiClient,
+    openai_key: Option<String>,
+    rice_future: tokio::task::JoinHandle<RiceStore>,
+    rt: tokio::runtime::Handle,
+) {
+    rt.spawn(async move {
+        let _ = tx.send(AgentEvent::Started { window_id });
+
+        let mut rice = match rice_future.await {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = tx.send(AgentEvent::Progress {
+                    window_id,
+                    line: "[error] Could not connect to Rice.".to_string(),
+                });
+                let _ = tx.send(AgentEvent::Finished {
+                    window_id,
+                    message: "Failed to connect to Rice.".to_string(),
+                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                });
+                return;
+            }
+        };
+
+        let Some(key) = &openai_key else {
+            let _ = tx.send(AgentEvent::Progress {
+                window_id,
+                line: "[error] No OpenAI key configured.".to_string(),
+            });
+            let _ = tx.send(AgentEvent::Finished {
+                window_id,
+                message: "No OpenAI key.".to_string(),
+                timestamp: Local::now().format("%H:%M:%S").to_string(),
+            });
+            return;
+        };
+
+        // -- Step 1: Recall memories
+        let _ = tx.send(AgentEvent::Progress {
+            window_id,
+            line: "Recalling memories from Rice...".to_string(),
+        });
+
+        let memories = match rice.reminisce(vec![], 6, &prompt).await {
+            Ok(traces) => traces,
+            Err(_) => Vec::new(),
+        };
+
+        if !memories.is_empty() {
+            let _ = tx.send(AgentEvent::Progress {
+                window_id,
+                line: format!("Found {} related memory(ies).", memories.len()),
+            });
+        }
+
+        let memory_ctx = crate::rice::format_memories(&memories);
+        let now = Local::now().format("%A, %B %e, %Y at %H:%M");
+
+        // -- Step 2: Build prompt and call LLM
+        let _ = tx.send(AgentEvent::Progress {
+            window_id,
+            line: "Thinking...".to_string(),
+        });
+
+        let mut input = vec![json!({"role": "system", "content": format!(
+            "{persona} The current date and time is {now}. \
+             If you need more information from the user to complete the task, \
+             end your response with exactly: [NEEDS_INPUT] followed by your question."
+        )})];
+        if !memory_ctx.is_empty() {
+            input.push(json!({"role": "system", "content": memory_ctx}));
+        }
+        input.push(json!({"role": "user", "content": prompt.clone()}));
+
+        let result = openai.response(key, &input, None).await;
+
+        let output_text = match result {
+            Ok(response) => {
+                let items = crate::openai::extract_output_items(&response);
+                let text = crate::openai::extract_output_text(&items);
+                if text.is_empty() { "(no output)".to_string() } else { text }
+            }
+            Err(err) => format!("Error: {err:#}"),
+        };
+
+        // -- Step 3: Stream output line by line
+        for line in output_text.lines() {
+            let _ = tx.send(AgentEvent::Progress {
+                window_id,
+                line: line.to_string(),
+            });
+            // Small delay between lines for visual streaming effect.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+
+        // -- Step 4: Commit to Rice memory
+        let _ = tx.send(AgentEvent::Progress {
+            window_id,
+            line: "Saving to Rice memory...".to_string(),
+        });
+
+        let _ = rice
+            .commit_trace(
+                &prompt,
+                &output_text,
+                &format!("agent-window:{window_id}"),
+                vec![],
+                &format!("memini:agent-{window_id}"),
+            )
+            .await;
+
+        // -- Step 5: Check if agent needs user input
+        if output_text.contains("[NEEDS_INPUT]") {
+            let question = output_text
+                .split("[NEEDS_INPUT]")
+                .nth(1)
+                .unwrap_or("How would you like me to proceed?")
+                .trim()
+                .to_string();
+            let _ = tx.send(AgentEvent::NeedsInput {
+                window_id,
+                question,
+            });
+        } else {
+            let _ = tx.send(AgentEvent::Finished {
+                window_id,
+                message: output_text,
+                timestamp: Local::now().format("%H:%M:%S").to_string(),
+            });
+        }
     });
 }

@@ -94,9 +94,12 @@ impl App {
             "  /auto results [name]    See recent task outputs",
             "",
             "Agents (Multi-Instance)",
-            "  /spawn <prompt>         Spin up a one-shot agent with your prompt",
-            "  /spawn list             Show all spawned agent runs",
-            "  /panel                  Toggle the side panel (or press Tab)",
+            "  /spawn <prompt>         Spin up a live agent window",
+            "  /spawn list             Show all agent windows + status",
+            "  Ctrl+1..9               Focus an agent window",
+            "  Ctrl+0                  Unfocus (back to main chat)",
+            "  Tab                     Toggle agent panel",
+            "  /panel                  Toggle the side panel",
             "",
             "Integrations",
             "  /mcp                    List available tools (MCP servers)",
@@ -1535,8 +1538,8 @@ impl App {
         let results: Vec<_> = self
             .daemon_results
             .iter()
-            .filter(|r| filter.is_none() || Some(r.task_name.as_str()) == filter)
-            .map(|r| (r.timestamp.clone(), r.task_name.clone(), r.message.clone()))
+            .filter(|r| filter.is_none() || Some(r.0.as_str()) == filter)
+            .map(|r| (r.2.clone(), r.0.clone(), r.1.clone()))
             .collect();
 
         if results.is_empty() {
@@ -1568,7 +1571,11 @@ impl App {
             );
             self.log(
                 LogLevel::Info,
-                "Spin up a one-shot agent instance. It runs in the background, commits results to Rice, and shows up in the side panel.".to_string(),
+                "Spin up a live agent window. Watch it think in real time, and reply if it needs help.".to_string(),
+            );
+            self.log(
+                LogLevel::Info,
+                "Use Ctrl+1..9 to focus a window, Ctrl+0 to unfocus.".to_string(),
             );
             return;
         }
@@ -1580,63 +1587,85 @@ impl App {
 
         // Everything after /spawn is the prompt.
         let prompt = args.join(" ");
-        self.spawn_agent_instance(&prompt);
+        self.spawn_agent_window_cmd(&prompt);
     }
 
-    fn spawn_agent_instance(&mut self, prompt: &str) {
-        // Generate a short instance name.
-        let idx = self.daemon_results.len() + self.daemon_handles.len() + 1;
-        let name = format!("agent-{idx}");
+    fn spawn_agent_window_cmd(&mut self, prompt: &str) {
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
+        let label = format!("Agent #{window_id}");
 
-        let def = super::daemon::DaemonTaskDef {
-            name: name.clone(),
-            persona: format!(
-                "{} You are running as a spawned agent instance. \
-                 Complete the task and return a clear, actionable result.",
-                self.active_agent.persona
-            ),
+        // Create the window in Thinking state.
+        let window = super::daemon::AgentWindow {
+            id: window_id,
+            label: label.clone(),
             prompt: prompt.to_string(),
-            interval_secs: 0, // one-shot, no interval
-            paused: false,
+            status: super::daemon::AgentWindowStatus::Thinking,
+            output_lines: Vec::new(),
+            pending_question: None,
+            scroll: 0,
         };
+        self.agent_windows.push(window);
 
-        self.run_daemon_oneshot(def);
-        self.log(
-            LogLevel::Info,
-            format!(
-                "Spawned '{name}' -- working in background. Results appear in the side panel (Tab)."
-            ),
+        // Spawn the background task.
+        let tx = self.daemon_tx.clone();
+        let openai = self.openai.clone();
+        let key = self.openai_key.clone();
+        let rice_handle = self.runtime.spawn(crate::rice::RiceStore::connect());
+        let persona = self.active_agent.persona.clone();
+
+        super::daemon::spawn_agent_window(
+            window_id,
+            persona,
+            prompt.to_string(),
+            tx,
+            openai,
+            key,
+            rice_handle,
+            self.runtime.handle().clone(),
         );
 
-        // Auto-show the side panel so user sees the result arrive.
-        if !self.show_side_panel {
-            self.show_side_panel = true;
-        }
+        self.log(
+            LogLevel::Info,
+            format!("Spawned {label} -- use Ctrl+{window_id} to focus, Tab to show panel."),
+        );
+
+        // Auto-show & focus.
+        self.show_side_panel = true;
+        self.focused_window = Some(window_id);
     }
 
     fn list_spawned_agents(&mut self) {
-        let spawned: Vec<_> = self
-            .daemon_results
-            .iter()
-            .filter(|r| r.task_name.starts_with("agent-"))
-            .map(|r| (r.timestamp.clone(), r.task_name.clone(), r.message.clone()))
-            .collect();
-
-        if spawned.is_empty() {
+        if self.agent_windows.is_empty() {
             self.log(
                 LogLevel::Info,
-                "No spawned agent results yet. Use /spawn <prompt> to run one.".to_string(),
+                "No agent windows. Use /spawn <prompt> to create one.".to_string(),
             );
             return;
         }
 
         self.log(
             LogLevel::Info,
-            format!("Spawned agent results ({}):", spawned.len()),
+            format!("Agent windows ({}):", self.agent_windows.len()),
         );
-        for (ts, name, msg) in spawned.iter().rev().take(10) {
-            let preview: String = msg.lines().next().unwrap_or("").chars().take(80).collect();
-            self.log(LogLevel::Info, format!("  [{ts}] {name} -- {preview}"));
+        let windows: Vec<_> = self
+            .agent_windows
+            .iter()
+            .map(|w| {
+                let status = match w.status {
+                    super::daemon::AgentWindowStatus::Thinking => "thinking",
+                    super::daemon::AgentWindowStatus::Done => "done",
+                    super::daemon::AgentWindowStatus::WaitingForInput => "WAITING FOR INPUT",
+                };
+                (w.id, w.label.clone(), w.prompt.clone(), status)
+            })
+            .collect();
+        for (id, label, prompt, status) in &windows {
+            let preview: String = prompt.chars().take(60).collect();
+            self.log(
+                LogLevel::Info,
+                format!("  [{id}] {label} -- {preview}  [{status}]"),
+            );
         }
     }
 }

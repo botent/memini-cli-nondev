@@ -1,4 +1,4 @@
-//! Terminal UI rendering — layout, status bar, side panel, and activity panel.
+//! Terminal UI rendering — layout, status bar, agent windows, and activity panel.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -9,9 +9,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::rice::RiceStatus;
 
 use super::App;
+use super::daemon::AgentWindowStatus;
 
 impl App {
-    /// Render the full TUI frame: header bar, activity log, side panel, and input prompt.
+    /// Render the full TUI frame: header bar, activity log, agent windows, and input prompt.
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -25,22 +26,36 @@ impl App {
         // ── Status bar ───────────────────────────────────────────────
         self.draw_status_bar(frame, rows[0]);
 
-        // ── Main content area (log + optional side panel) ────────────
+        // ── Main content area (log + optional agent panel) ───────────
         if self.show_side_panel {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
                 .split(rows[1]);
 
             self.draw_activity_log(frame, cols[0]);
-            self.draw_side_panel(frame, cols[1]);
+            self.draw_agent_panel(frame, cols[1]);
         } else {
             self.draw_activity_log(frame, rows[1]);
         }
 
         // ── Input prompt ─────────────────────────────────────────────
+        let prompt_label = if let Some(fid) = self.focused_window {
+            if self
+                .agent_windows
+                .iter()
+                .any(|w| w.id == fid && w.status == AgentWindowStatus::WaitingForInput)
+            {
+                format!(" Reply to Agent #{fid} ")
+            } else {
+                format!(" Command (focused: #{fid}) ")
+            }
+        } else {
+            " Command ".to_string()
+        };
+
         let input_panel = Paragraph::new(self.input.as_str())
-            .block(Block::default().borders(Borders::ALL).title("Command"));
+            .block(Block::default().borders(Borders::ALL).title(prompt_label));
         frame.render_widget(input_panel, rows[2]);
 
         let input_width = rows[2].width.saturating_sub(2) as usize;
@@ -53,7 +68,18 @@ impl App {
     fn draw_status_bar(&self, frame: &mut Frame<'_>, area: Rect) {
         let thread_turns = self.conversation_thread.len() / 2;
         let daemon_count = self.daemon_handles.len();
-        let spawn_count = self.daemon_results.len();
+        let window_count = self.agent_windows.len();
+        let thinking = self
+            .agent_windows
+            .iter()
+            .filter(|w| w.status == AgentWindowStatus::Thinking)
+            .count();
+        let waiting = self
+            .agent_windows
+            .iter()
+            .filter(|w| w.status == AgentWindowStatus::WaitingForInput)
+            .count();
+
         let mut spans = vec![
             Span::styled("Persona: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -90,17 +116,15 @@ impl App {
                 Style::default().fg(Color::Yellow),
             ));
         }
-        if spawn_count > 0 {
-            spans.push(Span::styled(
-                format!("  Runs: {spawn_count}"),
-                Style::default().fg(Color::Cyan),
-            ));
-        }
-        if self.show_side_panel {
-            spans.push(Span::styled(
-                "  [Tab: panel]",
-                Style::default().fg(Color::DarkGray),
-            ));
+        if window_count > 0 {
+            let mut agent_label = format!("  Agents: {window_count}");
+            if thinking > 0 {
+                agent_label.push_str(&format!(" ({thinking} thinking)"));
+            }
+            if waiting > 0 {
+                agent_label.push_str(&format!(" ({waiting} waiting)"));
+            }
+            spans.push(Span::styled(agent_label, Style::default().fg(Color::Cyan)));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
@@ -138,118 +162,150 @@ impl App {
         frame.render_widget(panel, area);
     }
 
-    // ── Side panel (Autopilot / Agents) ──────────────────────────────
+    // ── Agent panel (stacked agent windows) ──────────────────────────
 
-    fn draw_side_panel(&self, frame: &mut Frame<'_>, area: Rect) {
-        let inner_width = area.width.saturating_sub(2);
-
-        let mut lines: Vec<Line> = Vec::new();
-
-        // ── Running tasks section ──
-        lines.push(Line::from(Span::styled(
-            "Running Tasks",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-
-        if self.daemon_handles.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  (none -- use /auto start <name>)",
-                Style::default().fg(Color::DarkGray),
-            )));
-        } else {
-            for handle in &self.daemon_handles {
-                let name = &handle.def.name;
-                let interval = handle.def.interval_secs;
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(name.to_string(), Style::default().fg(Color::Green)),
-                    Span::styled(
-                        format!("  every {interval}s"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-        }
-
-        lines.push(Line::from(""));
-
-        // ── Available tasks section ──
-        let builtins = super::daemon::builtin_tasks();
-        let available: Vec<_> = builtins
-            .iter()
-            .filter(|b| !self.daemon_handles.iter().any(|h| h.def.name == b.name))
-            .collect();
-
-        if !available.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "Available Tasks",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for task in available {
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(task.name.clone(), Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("  {}s", task.interval_secs),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-            lines.push(Line::from(""));
-        }
-
-        // ── Recent results section ──
-        lines.push(Line::from(Span::styled(
-            "Recent Results",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-
-        if self.daemon_results.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  (no results yet)",
-                Style::default().fg(Color::DarkGray),
-            )));
-        } else {
-            // Show the most recent results (newest first), truncated per row.
-            let max_msg_width = inner_width.saturating_sub(12) as usize;
-            for event in self.daemon_results.iter().rev().take(20) {
-                let name_span = Span::styled(
-                    format!("  {}", event.task_name),
-                    Style::default().fg(Color::Cyan),
-                );
-                let time_span = Span::styled(
-                    format!(" {}", event.timestamp),
+    fn draw_agent_panel(&self, frame: &mut Frame<'_>, area: Rect) {
+        if self.agent_windows.is_empty() && self.daemon_handles.is_empty() {
+            // Empty state.
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  No agents running.",
                     Style::default().fg(Color::DarkGray),
-                );
-                lines.push(Line::from(vec![name_span, time_span]));
-
-                // Show first line of the message, truncated.
-                let first_line = event
-                    .message
-                    .lines()
-                    .next()
-                    .unwrap_or("(empty)")
-                    .chars()
-                    .take(max_msg_width)
-                    .collect::<String>();
-                lines.push(Line::from(Span::styled(
-                    format!("    {first_line}"),
-                    Style::default().fg(Color::White),
-                )));
-            }
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  /spawn <prompt>  to start one",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "  /auto start <name>  for autopilot",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "  Ctrl+1..9 to focus a window",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            let panel = Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title(" Agents "));
+            frame.render_widget(panel, area);
+            return;
         }
 
-        let panel = Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title(" Autopilot "))
-            .wrap(Wrap { trim: false });
+        // Split the panel area vertically among agent windows + optional daemon summary.
+        let window_count = self.agent_windows.len();
+        let has_daemons = !self.daemon_handles.is_empty();
+        let total_sections = window_count + if has_daemons { 1 } else { 0 };
 
-        frame.render_widget(panel, area);
+        if total_sections == 0 {
+            return;
+        }
+
+        // Each agent window gets an equal share; daemons get a small fixed section.
+        let mut constraints: Vec<Constraint> = Vec::new();
+        if has_daemons {
+            let daemon_height = (self.daemon_handles.len() as u16 + 2).min(6);
+            constraints.push(Constraint::Length(daemon_height));
+        }
+        for _ in 0..window_count {
+            constraints.push(Constraint::Min(5));
+        }
+
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+
+        let mut section_idx = 0;
+
+        // ── Daemon summary (compact) ──
+        if has_daemons {
+            let mut lines: Vec<Line> = Vec::new();
+            for handle in &self.daemon_handles {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} ", handle.def.name),
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(
+                        format!("every {}s", handle.def.interval_secs),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+            let panel = Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title(" Autopilot "));
+            frame.render_widget(panel, sections[section_idx]);
+            section_idx += 1;
+        }
+
+        // ── Agent windows ──
+        for window in &self.agent_windows {
+            if section_idx >= sections.len() {
+                break;
+            }
+            let win_area = sections[section_idx];
+            section_idx += 1;
+
+            let is_focused = self.focused_window == Some(window.id);
+
+            // Status indicator.
+            let (status_label, status_color) = match window.status {
+                AgentWindowStatus::Thinking => ("thinking...", Color::Yellow),
+                AgentWindowStatus::Done => ("done", Color::Green),
+                AgentWindowStatus::WaitingForInput => ("NEEDS INPUT", Color::Red),
+            };
+
+            let title = format!(" [{}] {} -- {} ", window.id, window.label, status_label);
+
+            let border_style = if is_focused {
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            // Build output lines for this window.
+            let inner_height = win_area.height.saturating_sub(2) as usize;
+            let display_lines: Vec<Line> = window
+                .output_lines
+                .iter()
+                .rev()
+                .take(inner_height.max(1))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .map(|s| {
+                    let color = if s.starts_with(">>") {
+                        Color::Red
+                    } else if s.starts_with("--") {
+                        Color::DarkGray
+                    } else if s.starts_with("Thinking")
+                        || s.starts_with("Recalling")
+                        || s.starts_with("Saving")
+                        || s.starts_with("Found")
+                    {
+                        Color::Yellow
+                    } else {
+                        Color::White
+                    };
+                    Line::from(Span::styled(format!(" {s}"), Style::default().fg(color)))
+                })
+                .collect();
+
+            let panel = Paragraph::new(Text::from(display_lines))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(border_style)
+                        .title(Span::styled(title, Style::default().fg(status_color))),
+                )
+                .wrap(Wrap { trim: false });
+
+            frame.render_widget(panel, win_area);
+        }
     }
 
     // ── Status-bar helpers ───────────────────────────────────────────

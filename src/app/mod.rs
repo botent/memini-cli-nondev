@@ -37,7 +37,7 @@ use crate::rice::RiceStore;
 use crate::util::env_first;
 
 use self::agents::Agent;
-use self::daemon::{AgentEvent, DaemonHandle};
+use self::daemon::{AgentEvent, AgentWindow, AgentWindowStatus, DaemonHandle};
 use self::logging::{LogContent, LogLevel, LogLine};
 use self::store::{LocalMcpStore, load_local_mcp_store};
 
@@ -78,7 +78,11 @@ pub struct App {
     pub(crate) daemon_tx: mpsc::UnboundedSender<AgentEvent>,
     pub(crate) daemon_rx: mpsc::UnboundedReceiver<AgentEvent>,
     pub(crate) daemon_handles: Vec<DaemonHandle>,
-    pub(crate) daemon_results: Vec<AgentEvent>,
+    pub(crate) daemon_results: Vec<(String, String, String)>, // (task_name, message, timestamp)
+    // Agent windows (live interactive agents in side panel)
+    pub(crate) agent_windows: Vec<AgentWindow>,
+    pub(crate) next_window_id: usize,
+    pub(crate) focused_window: Option<usize>, // id of the focused window
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────
@@ -125,6 +129,9 @@ impl App {
             daemon_rx,
             daemon_handles: Vec::new(),
             daemon_results: Vec::new(),
+            agent_windows: Vec::new(),
+            next_window_id: 1,
+            focused_window: None,
         };
 
         app.log(
@@ -273,6 +280,25 @@ impl App {
                 code: KeyCode::Tab, ..
             } => self.show_side_panel = !self.show_side_panel,
 
+            // Ctrl+1 through Ctrl+9: focus agent window.
+            KeyEvent {
+                code: KeyCode::Char(ch @ '1'..='9'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                let idx = (ch as usize) - ('0' as usize);
+                self.focus_agent_window(idx);
+            }
+
+            // Ctrl+0: unfocus (back to main chat).
+            KeyEvent {
+                code: KeyCode::Char('0'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.focused_window = None;
+            }
+
             KeyEvent { code, .. } => match code {
                 KeyCode::Char(ch) => {
                     self.scroll_offset = 0; // snap to bottom on new input
@@ -322,6 +348,13 @@ impl App {
         // Push to input history (skip consecutive duplicates).
         if self.input_history.last().map_or(true, |prev| prev != &line) {
             self.input_history.push(line.clone());
+        }
+
+        // If an agent window is focused and waiting for input, reply to it.
+        if let Some(focused_id) = self.focused_window {
+            if self.reply_to_agent_window(focused_id, &line) {
+                return Ok(());
+            }
         }
 
         if line.starts_with('/') {
@@ -424,16 +457,137 @@ impl App {
 // ── Daemon (background agents) ───────────────────────────────────────
 
 impl App {
-    /// Drain pending background agent results and display them.
+    /// Drain pending background agent events and route them.
     pub(crate) fn drain_daemon_events(&mut self) {
         while let Ok(event) = self.daemon_rx.try_recv() {
-            let label = format!("{} (background)", event.task_name);
-            self.log_markdown(label, event.message.clone());
-            self.daemon_results.push(event);
-            if self.daemon_results.len() > MAX_DAEMON_RESULTS {
-                self.daemon_results.remove(0);
+            match event {
+                AgentEvent::Started { window_id } => {
+                    if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
+                        win.status = AgentWindowStatus::Thinking;
+                        win.output_lines.push("-- started --".to_string());
+                    }
+                }
+                AgentEvent::Progress { window_id, line } => {
+                    if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
+                        win.output_lines.push(line);
+                    }
+                }
+                AgentEvent::Finished {
+                    window_id,
+                    message,
+                    timestamp,
+                } => {
+                    if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
+                        win.status = AgentWindowStatus::Done;
+                        win.output_lines.push(format!("-- done at {timestamp} --"));
+                        win.pending_question = None;
+                    }
+                    // Also log to main chat.
+                    let label = self
+                        .agent_windows
+                        .iter()
+                        .find(|w| w.id == window_id)
+                        .map(|w| w.label.clone())
+                        .unwrap_or_else(|| format!("agent-{window_id}"));
+                    self.log_markdown(label, message);
+                }
+                AgentEvent::NeedsInput {
+                    window_id,
+                    question,
+                } => {
+                    if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
+                        win.status = AgentWindowStatus::WaitingForInput;
+                        win.pending_question = Some(question.clone());
+                        win.output_lines
+                            .push(format!(">> Waiting for your input: {question}"));
+                    }
+                    // Auto-focus the window that needs input.
+                    self.focused_window = Some(window_id);
+                    if !self.show_side_panel {
+                        self.show_side_panel = true;
+                    }
+                }
+                AgentEvent::DaemonResult {
+                    task_name,
+                    message,
+                    timestamp,
+                } => {
+                    let label = format!("{task_name} (background)");
+                    self.log_markdown(label, message.clone());
+                    self.daemon_results.push((task_name, message, timestamp));
+                    if self.daemon_results.len() > MAX_DAEMON_RESULTS {
+                        self.daemon_results.remove(0);
+                    }
+                }
             }
         }
+    }
+
+    /// Focus an agent window by its 1-based id.
+    pub(crate) fn focus_agent_window(&mut self, id: usize) {
+        if self.agent_windows.iter().any(|w| w.id == id) {
+            self.focused_window = Some(id);
+            if !self.show_side_panel {
+                self.show_side_panel = true;
+            }
+        }
+    }
+
+    /// Reply to a focused agent window that is waiting for input.
+    /// Returns true if the reply was handled, false if no window was waiting.
+    pub(crate) fn reply_to_agent_window(&mut self, window_id: usize, reply: &str) -> bool {
+        let waiting = self
+            .agent_windows
+            .iter()
+            .any(|w| w.id == window_id && w.status == AgentWindowStatus::WaitingForInput);
+
+        if !waiting {
+            return false;
+        }
+
+        // Update the window.
+        if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
+            win.output_lines.push(format!(">> You: {reply}"));
+            win.status = AgentWindowStatus::Thinking;
+            win.pending_question = None;
+        }
+
+        let persona = self
+            .agent_windows
+            .iter()
+            .find(|w| w.id == window_id)
+            .map(|w| w.label.clone())
+            .unwrap_or_default();
+
+        let prompt = format!(
+            "The user replied to your question: \"{reply}\"\n\
+             Continue working on the original task."
+        );
+
+        self.log(
+            LogLevel::Info,
+            format!("Replied to agent window {window_id}: {reply}"),
+        );
+
+        // Spawn a continuation.
+        let tx = self.daemon_tx.clone();
+        let openai = self.openai.clone();
+        let key = self.openai_key.clone();
+        let rice_handle = self.runtime.spawn(RiceStore::connect());
+        let active_persona = self.active_agent.persona.clone();
+
+        daemon::spawn_agent_window(
+            window_id,
+            active_persona,
+            prompt,
+            tx,
+            openai,
+            key,
+            rice_handle,
+            self.runtime.handle().clone(),
+        );
+
+        true
     }
 
     /// Spawn a background daemon task, connecting it to the shared channel.
