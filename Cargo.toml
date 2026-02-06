@@ -6,11 +6,18 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono = { version = "0.4", default-features = false, features = [
+    "std",
+    "clock",
+] }
 crossterm = "0.27"
 dotenvy = "0.15"
 directories = "5.0"
-mcp-protocol-sdk = { version = "0.5.1", features = ["http", "reqwest", "futures", "tokio-stream"] }
+rmcp = { version = "0.12", features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
 open = "5.0"
 rand = "0.8"
 ratatui = "0.26"
