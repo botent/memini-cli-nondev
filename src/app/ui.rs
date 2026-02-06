@@ -1,7 +1,7 @@
 //! Terminal UI rendering — layout, status bar, and activity panel.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Position};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -20,7 +20,7 @@ impl App {
                 Constraint::Min(1),
                 Constraint::Length(3),
             ])
-            .split(frame.size());
+            .split(frame.area());
 
         // ── Status bar ───────────────────────────────────────────────
         let header_line = Line::from(vec![
@@ -43,13 +43,33 @@ impl App {
         frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
         // ── Activity log ─────────────────────────────────────────────
-        let log_height = chunks[1].height as usize;
-        let start = self.logs.len().saturating_sub(log_height);
-        let lines: Vec<Line> = self.logs[start..].iter().map(|l| l.render()).collect();
+        let inner_width = chunks[1].width.saturating_sub(2);
+        let inner_height = chunks[1].height.saturating_sub(2) as usize;
 
-        let log_panel = Paragraph::new(Text::from(lines))
-            .block(Block::default().borders(Borders::ALL).title("Activity"))
+        // Build the log paragraph with wrapping so we can query its
+        // rendered line count (ratatui 0.30 native API).
+        let log_lines: Vec<Line> = self.logs.iter().map(|l| l.render()).collect();
+        let log_paragraph = Paragraph::new(Text::from(log_lines))
             .wrap(Wrap { trim: true });
+
+        let total_visual = log_paragraph.line_count(inner_width);
+        let max_scroll = total_visual.saturating_sub(inner_height);
+
+        // Clamp scroll_offset (lines from the bottom) to valid range.
+        if (self.scroll_offset as usize) > max_scroll {
+            self.scroll_offset = max_scroll as u16;
+        }
+        let top_row = max_scroll.saturating_sub(self.scroll_offset as usize) as u16;
+
+        let scroll_indicator = if self.scroll_offset > 0 {
+            format!(" Activity [↑{}] ", self.scroll_offset)
+        } else {
+            " Activity ".to_string()
+        };
+
+        let log_panel = log_paragraph
+            .block(Block::default().borders(Borders::ALL).title(scroll_indicator))
+            .scroll((top_row, 0));
         frame.render_widget(log_panel, chunks[1]);
 
         // ── Input prompt ─────────────────────────────────────────────
@@ -59,7 +79,10 @@ impl App {
 
         let input_width = chunks[2].width.saturating_sub(2) as usize;
         let cursor = self.cursor.min(input_width);
-        frame.set_cursor(chunks[2].x + 1 + cursor as u16, chunks[2].y + 1);
+        frame.set_cursor_position(Position::new(
+            chunks[2].x + 1 + cursor as u16,
+            chunks[2].y + 1,
+        ));
     }
 
     // ── Status-bar helpers ───────────────────────────────────────────
