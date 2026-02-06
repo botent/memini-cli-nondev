@@ -17,6 +17,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use crossterm::ExecutableCommand;
 use crossterm::event;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableMouseCapture;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -44,6 +46,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     terminal::enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -53,6 +56,7 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
 fn restore_terminal() -> Result<()> {
     terminal::disable_raw_mode().context("disable raw mode")?;
     let mut stdout = io::stdout();
+    stdout.execute(DisableMouseCapture)?;
     stdout.execute(LeaveAlternateScreen)?;
     Ok(())
 }

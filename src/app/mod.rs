@@ -24,7 +24,7 @@ mod ui;
 
 use anyhow::{Context, Result};
 use chrono::Local;
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
@@ -69,6 +69,10 @@ pub struct App {
     pub(crate) pending_oauth: Option<(String, PendingOAuth)>,
     pub(crate) scroll_offset: u16,
     pub(crate) should_quit: bool,
+    // Input history (up/down arrow cycling)
+    pub(crate) input_history: Vec<String>,
+    pub(crate) history_index: Option<usize>,
+    pub(crate) history_stash: String,
     // Daemon (autonomous background agents)
     pub(crate) daemon_tx: mpsc::UnboundedSender<AgentEvent>,
     pub(crate) daemon_rx: mpsc::UnboundedReceiver<AgentEvent>,
@@ -112,6 +116,9 @@ impl App {
             pending_oauth: None,
             scroll_offset: 0,
             should_quit: false,
+            input_history: Vec::new(),
+            history_index: None,
+            history_stash: String::new(),
             daemon_tx,
             daemon_rx,
             daemon_handles: Vec::new(),
@@ -237,8 +244,10 @@ impl App {
         // Drain any background agent results first.
         self.drain_daemon_events();
 
-        if let Event::Key(key) = event {
-            self.handle_key(key)?;
+        match event {
+            Event::Key(key) => self.handle_key(key)?,
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
+            _ => {}
         }
         Ok(())
     }
@@ -261,6 +270,7 @@ impl App {
             KeyEvent { code, .. } => match code {
                 KeyCode::Char(ch) => {
                     self.scroll_offset = 0; // snap to bottom on new input
+                    self.history_index = None; // reset history browse
                     self.insert_char(ch);
                 }
                 KeyCode::Backspace => self.backspace(),
@@ -269,15 +279,23 @@ impl App {
                 KeyCode::Right => self.move_cursor_right(),
                 KeyCode::Home => self.move_cursor_home(),
                 KeyCode::End => self.move_cursor_end(),
-                KeyCode::Up => self.scroll_up(1),
-                KeyCode::Down => self.scroll_down(1),
+                KeyCode::Up => self.history_prev(),
+                KeyCode::Down => self.history_next(),
                 KeyCode::PageUp => self.scroll_up(10),
                 KeyCode::PageDown => self.scroll_down(10),
                 KeyCode::Enter => {
                     self.scroll_offset = 0; // snap to bottom on submit
                     self.submit_input()?;
                 }
-                KeyCode::Esc => self.should_quit = true,
+                KeyCode::Esc => {
+                    if !self.input.is_empty() {
+                        self.input.clear();
+                        self.cursor = 0;
+                        self.history_index = None;
+                    } else {
+                        self.should_quit = true;
+                    }
+                }
                 _ => {}
             },
         }
@@ -289,9 +307,15 @@ impl App {
         let line = self.input.trim().to_string();
         self.input.clear();
         self.cursor = 0;
+        self.history_index = None;
 
         if line.is_empty() {
             return Ok(());
+        }
+
+        // Push to input history (skip consecutive duplicates).
+        if self.input_history.last().map_or(true, |prev| prev != &line) {
+            self.input_history.push(line.clone());
         }
 
         if line.starts_with('/') {
@@ -304,7 +328,7 @@ impl App {
     }
 }
 
-// ── Scrolling ────────────────────────────────────────────────────────
+// ── Scrolling & mouse ────────────────────────────────────────────────
 
 impl App {
     /// Scroll the activity log up by `n` lines.
@@ -315,6 +339,15 @@ impl App {
     /// Scroll the activity log down by `n` lines (towards the latest).
     pub(crate) fn scroll_down(&mut self, n: u16) {
         self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+
+    /// Handle mouse events (scroll wheel / trackpad).
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.scroll_up(3),
+            MouseEventKind::ScrollDown => self.scroll_down(3),
+            _ => {}
+        }
     }
 }
 
