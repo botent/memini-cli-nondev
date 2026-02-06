@@ -31,6 +31,15 @@ impl App {
                 self.active_agent.name.clone(),
                 Style::default().fg(Color::Magenta),
             ),
+        ];
+        if let Some(ws) = &self.rice.shared_run_id {
+            header_spans.push(Span::styled("  Workspace: ", Style::default().fg(Color::DarkGray)));
+            header_spans.push(Span::styled(
+                ws.clone(),
+                Style::default().fg(Color::Green),
+            ));
+        }
+        header_spans.extend([
             Span::styled("  Tools: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 self.mcp_status_label(),
@@ -45,7 +54,7 @@ impl App {
                 format!("  Turns: {thread_turns}"),
                 Style::default().fg(Color::DarkGray),
             ),
-        ];
+        ]);
         if daemon_count > 0 {
             header_spans.push(Span::styled(
                 format!("  Auto: {daemon_count}"),

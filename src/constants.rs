@@ -42,3 +42,8 @@ pub const DAEMON_SCHEDULE_VAR: &str = "memini_daemon_schedule";
 pub const DEFAULT_AGENT_INTERVAL_SECS: u64 = 1800; // 30 minutes
 /// How many most-recent daemon results to keep in memory.
 pub const MAX_DAEMON_RESULTS: usize = 50;
+
+// ── Shared workspace constants ───────────────────────────────────────
+
+/// Rice variable key for the last-joined shared workspace.
+pub const SHARED_WORKSPACE_VAR: &str = "memini_shared_workspace";

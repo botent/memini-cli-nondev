@@ -205,6 +205,22 @@ impl App {
             }
             _ => {}
         }
+
+        // Restore shared workspace.
+        match self.runtime.block_on(self.rice.load_shared_workspace()) {
+            Ok(Some(name)) => {
+                self.rice.join_workspace(&name);
+                self.log(LogLevel::Info, format!("Rejoined shared workspace: {name}"));
+            }
+            Err(err) => {
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Shared workspace load skipped: {err}")
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Whether the user has requested to quit.
