@@ -8,7 +8,9 @@ use rice_sdk::rice_core::config::{RiceConfig, StateConfig, StorageConfig};
 use rice_sdk::rice_state::proto::Trace;
 use serde_json::Value;
 
-use crate::constants::{APP_NAME, DEFAULT_RUN_ID};
+use crate::constants::{
+    ACTIVE_AGENT_VAR, APP_NAME, CONVERSATION_THREAD_VAR, CUSTOM_AGENTS_VAR, DEFAULT_RUN_ID,
+};
 use crate::util::{env_first, normalize_url};
 
 /// Persistent store backed by the Rice State gRPC service.
@@ -192,6 +194,54 @@ impl RiceStore {
         state.commit(trace).await.context("commit trace")?;
         Ok(())
     }
+
+    // ── Conversation thread ──────────────────────────────────────────
+
+    pub async fn save_thread(&mut self, messages: &[Value]) -> Result<()> {
+        self.set_variable(
+            CONVERSATION_THREAD_VAR,
+            Value::Array(messages.to_vec()),
+            "chat",
+        )
+        .await
+    }
+
+    pub async fn load_thread(&mut self) -> Result<Vec<Value>> {
+        match self.get_variable(CONVERSATION_THREAD_VAR).await? {
+            Some(Value::Array(messages)) => Ok(messages),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    pub async fn clear_thread(&mut self) -> Result<()> {
+        self.delete_variable(CONVERSATION_THREAD_VAR).await
+    }
+
+    // ── Agent persistence ────────────────────────────────────────────
+
+    pub async fn save_custom_agents(&mut self, agents_json: Value) -> Result<()> {
+        self.set_variable(CUSTOM_AGENTS_VAR, agents_json, "agent").await
+    }
+
+    pub async fn load_custom_agents(&mut self) -> Result<Option<Value>> {
+        self.get_variable(CUSTOM_AGENTS_VAR).await
+    }
+
+    pub async fn save_active_agent_name(&mut self, name: &str) -> Result<()> {
+        self.set_variable(
+            ACTIVE_AGENT_VAR,
+            Value::String(name.to_string()),
+            "agent",
+        )
+        .await
+    }
+
+    pub async fn load_active_agent_name(&mut self) -> Result<Option<String>> {
+        match self.get_variable(ACTIVE_AGENT_VAR).await? {
+            Some(Value::String(name)) => Ok(Some(name)),
+            _ => Ok(None),
+        }
+    }
 }
 
 fn rice_run_id() -> String {
@@ -247,21 +297,21 @@ pub fn format_memories(traces: &[Trace]) -> String {
     lines.join("\n")
 }
 
-pub fn system_prompt(require_mcp: bool) -> String {
+pub fn system_prompt(persona: &str, require_mcp: bool) -> String {
     let now = chrono::Local::now().format("%A, %B %e, %Y at %H:%M");
     if require_mcp {
         format!(
-            "You are Memini, a concise CLI assistant. The current date and time is {now}. \
+            "{persona} The current date and time is {now}. \
              Use available tools when needed to answer the user's request. Summarize results clearly."
         )
     } else {
         format!(
-            "You are Memini, a concise CLI assistant. The current date and time is {now}. \
+            "{persona} The current date and time is {now}. \
              Use any provided memory context when helpful and answer clearly."
         )
     }
 }
 
-pub fn agent_id() -> &'static str {
-    APP_NAME
+pub fn agent_id_for(agent_name: &str) -> String {
+    format!("{APP_NAME}:{agent_name}")
 }

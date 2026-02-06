@@ -13,6 +13,7 @@
 //! | `store`      | Local on-disk MCP credential cache        |
 //! | `ui`         | TUI rendering & status-bar helpers        |
 
+mod agents;
 mod chat;
 mod commands;
 mod input;
@@ -33,6 +34,7 @@ use crate::openai::OpenAiClient;
 use crate::rice::RiceStore;
 use crate::util::env_first;
 
+use self::agents::Agent;
 use self::logging::{LogLevel, LogLine};
 use self::store::{LocalMcpStore, load_local_mcp_store};
 
@@ -54,6 +56,9 @@ pub struct App {
     pub(crate) mcp_connection: Option<McpConnection>,
     pub(crate) local_mcp_store: LocalMcpStore,
     pub(crate) rice: RiceStore,
+    pub(crate) active_agent: Agent,
+    pub(crate) custom_agents: Vec<Agent>,
+    pub(crate) conversation_thread: Vec<serde_json::Value>,
     pub(crate) openai_key_hint: Option<String>,
     pub(crate) openai_key: Option<String>,
     pub(crate) openai: OpenAiClient,
@@ -87,6 +92,9 @@ impl App {
             mcp_connection: None,
             local_mcp_store,
             rice,
+            active_agent: Agent::default(),
+            custom_agents: Vec::new(),
+            conversation_thread: Vec::new(),
             openai_key_hint: None,
             openai_key: None,
             openai: OpenAiClient::new(),
@@ -106,7 +114,7 @@ impl App {
         );
         app.log(
             LogLevel::Info,
-            "Type /help for commands. /mcp shows available servers.".to_string(),
+            "Type /help for commands. Just type to chat — I remember everything ✨".to_string(),
         );
 
         app.bootstrap();
@@ -116,10 +124,69 @@ impl App {
     /// Load persisted state from Rice on startup.
     fn bootstrap(&mut self) {
         if let Err(err) = self.load_openai_from_rice() {
-            log_src!(self, LogLevel::Warn, format!("OpenAI key load skipped: {err}"));
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("OpenAI key load skipped: {err}")
+            );
         }
         if let Err(err) = self.load_active_mcp_from_rice() {
-            log_src!(self, LogLevel::Warn, format!("Active MCP load skipped: {err}"));
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Active MCP load skipped: {err}")
+            );
+        }
+
+        // Restore custom agents.
+        match self.runtime.block_on(self.rice.load_custom_agents()) {
+            Ok(Some(value)) => {
+                if let Ok(agents) = serde_json::from_value::<Vec<Agent>>(value) {
+                    self.custom_agents = agents;
+                }
+            }
+            Err(err) => {
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Custom agents load skipped: {err}")
+                );
+            }
+            _ => {}
+        }
+
+        // Restore active agent.
+        match self.runtime.block_on(self.rice.load_active_agent_name()) {
+            Ok(Some(name)) if name != "memini" => {
+                if let Some(agent) = self.custom_agents.iter().find(|a| a.name == name) {
+                    self.active_agent = agent.clone();
+                    self.log(LogLevel::Info, format!("\u{1F916} Agent: {}", agent.name));
+                }
+            }
+            Err(err) => {
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Active agent load skipped: {err}")
+                );
+            }
+            _ => {}
+        }
+
+        // Restore conversation thread.
+        match self.runtime.block_on(self.rice.load_thread()) {
+            Ok(thread) if !thread.is_empty() => {
+                let turns = thread.len() / 2;
+                self.conversation_thread = thread;
+                self.log(
+                    LogLevel::Info,
+                    format!("\u{1F4DD} Restored {turns} conversation turn(s) from Rice."),
+                );
+            }
+            Err(err) => {
+                log_src!(self, LogLevel::Warn, format!("Thread load skipped: {err}"));
+            }
+            _ => {}
         }
     }
 

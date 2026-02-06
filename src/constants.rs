@@ -24,3 +24,12 @@ pub const MAX_TOOL_LOOPS: usize = 6;
 pub const DEFAULT_MEMORY_LIMIT: u64 = 6;
 /// Maximum number of log entries kept in the activity panel.
 pub const MAX_LOGS: usize = 1000;
+
+/// Rice variable key for the conversation thread.
+pub const CONVERSATION_THREAD_VAR: &str = "conversation_thread";
+/// Rice variable key for the active agent name.
+pub const ACTIVE_AGENT_VAR: &str = "active_agent_name";
+/// Rice variable key for user-created agents.
+pub const CUSTOM_AGENTS_VAR: &str = "custom_agents";
+/// Maximum number of messages kept in the conversation thread.
+pub const MAX_THREAD_MESSAGES: usize = 30;

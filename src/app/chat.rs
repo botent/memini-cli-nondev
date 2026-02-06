@@ -10,14 +10,14 @@ use crate::mcp;
 use crate::openai::{
     extract_output_items, extract_output_text, extract_tool_calls, tool_loop_limit_reached,
 };
-use crate::rice::{agent_id, format_memories, system_prompt};
+use crate::rice::{agent_id_for, format_memories, system_prompt};
 
 use super::App;
 use super::log_src;
 use super::logging::{LogLevel, mask_key};
 
 impl App {
-    /// Run a full chat turn: embed → recall → LLM → tool loops → commit.
+    /// Run a full chat turn: recall → LLM → tool loops → commit → persist thread.
     pub(crate) fn handle_chat_message(&mut self, message: &str, require_mcp: bool) {
         let key = match self.ensure_openai_key() {
             Ok(k) => k,
@@ -58,13 +58,30 @@ impl App {
                 }
             };
 
-        // Build LLM input.
+        if !memories.is_empty() {
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "\u{1F9E0} Recalled {} memory(ies) from Rice.",
+                    memories.len()
+                ),
+            );
+        }
+
+        // Build LLM input: system prompt + memories + conversation thread + new message.
         let memory_context = format_memories(&memories);
         let mut input = Vec::new();
-        input.push(json!({"role": "system", "content": system_prompt(require_mcp)}));
+        input.push(json!({"role": "system", "content": system_prompt(&self.active_agent.persona, require_mcp)}));
         if !memory_context.is_empty() {
             input.push(json!({"role": "system", "content": memory_context}));
         }
+
+        // Include conversation thread (previous turns give multi-turn context).
+        for msg in &self.conversation_thread {
+            input.push(msg.clone());
+        }
+
+        // New user message.
         input.push(json!({"role": "user", "content": message}));
 
         let tools = match self.openai_tools_for_mcp(require_mcp) {
@@ -113,6 +130,10 @@ impl App {
             tool_loops += 1;
 
             for call in tool_calls {
+                self.log(
+                    LogLevel::Info,
+                    format!("\u{26A1} Calling tool: {}", call.name),
+                );
                 let tool_output = match self.call_mcp_tool_value(&call.name, call.arguments) {
                     Ok(value) => serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()),
                     Err(err) => format!("{{\"error\":\"{err}\"}}"),
@@ -158,13 +179,36 @@ impl App {
             self.log(LogLevel::Info, format!("Assistant: {output_text}"));
         }
 
-        // Commit trace to Rice (Rice computes embeddings server-side).
+        // Update conversation thread with this turn.
+        self.conversation_thread
+            .push(json!({"role": "user", "content": message}));
+        if !output_text.is_empty() {
+            self.conversation_thread
+                .push(json!({"role": "assistant", "content": output_text}));
+        }
+
+        // Trim thread if over limit.
+        let max = crate::constants::MAX_THREAD_MESSAGES;
+        while self.conversation_thread.len() > max {
+            self.conversation_thread.drain(0..2);
+        }
+
+        // Persist thread to Rice.
+        if let Err(err) = self
+            .runtime
+            .block_on(self.rice.save_thread(&self.conversation_thread))
+        {
+            log_src!(self, LogLevel::Warn, format!("Thread save failed: {err:#}"));
+        }
+
+        // Commit trace to Rice long-term memory.
+        let aid = agent_id_for(&self.active_agent.name);
         if let Err(err) = self.runtime.block_on(self.rice.commit_trace(
             message,
             &output_text,
             "chat",
             vec![],
-            agent_id(),
+            &aid,
         )) {
             log_src!(self, LogLevel::Warn, format!("Rice commit failed: {err:#}"));
         }

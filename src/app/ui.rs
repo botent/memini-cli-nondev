@@ -23,8 +23,14 @@ impl App {
             .split(frame.area());
 
         // ── Status bar ───────────────────────────────────────────────
+        let thread_turns = self.conversation_thread.len() / 2;
         let header_line = Line::from(vec![
-            Span::styled("MCP: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                self.active_agent.name.clone(),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::styled("  MCP: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 self.mcp_status_label(),
                 Style::default().fg(self.mcp_status_color()),
@@ -38,6 +44,10 @@ impl App {
             Span::styled(
                 self.rice.status_label(),
                 Style::default().fg(self.rice_status_color()),
+            ),
+            Span::styled(
+                format!("  Thread: {thread_turns}"),
+                Style::default().fg(Color::DarkGray),
             ),
         ]);
         frame.render_widget(Paragraph::new(header_line), chunks[0]);
