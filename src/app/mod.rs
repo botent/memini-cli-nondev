@@ -16,6 +16,7 @@
 mod agents;
 mod chat;
 mod commands;
+mod daemon;
 mod input;
 mod logging;
 mod store;
@@ -25,8 +26,9 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
 
-use crate::constants::{DEFAULT_MEMORY_LIMIT, MAX_LOGS};
+use crate::constants::{DEFAULT_MEMORY_LIMIT, MAX_DAEMON_RESULTS, MAX_LOGS};
 use crate::mcp::McpConnection;
 use crate::mcp::config::{McpConfig, McpServer, McpSource};
 use crate::mcp::oauth::PendingOAuth;
@@ -35,6 +37,7 @@ use crate::rice::RiceStore;
 use crate::util::env_first;
 
 use self::agents::Agent;
+use self::daemon::{AgentEvent, DaemonHandle};
 use self::logging::{LogLevel, LogLine};
 use self::store::{LocalMcpStore, load_local_mcp_store};
 
@@ -66,6 +69,11 @@ pub struct App {
     pub(crate) pending_oauth: Option<(String, PendingOAuth)>,
     pub(crate) scroll_offset: u16,
     pub(crate) should_quit: bool,
+    // Daemon (autonomous background agents)
+    pub(crate) daemon_tx: mpsc::UnboundedSender<AgentEvent>,
+    pub(crate) daemon_rx: mpsc::UnboundedReceiver<AgentEvent>,
+    pub(crate) daemon_handles: Vec<DaemonHandle>,
+    pub(crate) daemon_results: Vec<AgentEvent>,
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────
@@ -80,6 +88,8 @@ impl App {
         let memory_limit = env_first(&["MEMINI_MEMORY_LIMIT"])
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_MEMORY_LIMIT);
+
+        let (daemon_tx, daemon_rx) = mpsc::unbounded_channel();
 
         let mut app = App {
             runtime,
@@ -102,6 +112,10 @@ impl App {
             pending_oauth: None,
             scroll_offset: 0,
             should_quit: false,
+            daemon_tx,
+            daemon_rx,
+            daemon_handles: Vec::new(),
+            daemon_results: Vec::new(),
         };
 
         app.log(
@@ -201,6 +215,9 @@ impl App {
 impl App {
     /// Route a terminal event to the appropriate handler.
     pub fn handle_event(&mut self, event: Event) -> Result<()> {
+        // Drain any background agent results first.
+        self.drain_daemon_events();
+
         if let Event::Key(key) = event {
             self.handle_key(key)?;
         }
@@ -329,5 +346,68 @@ impl App {
             _ => message,
         };
         self.log(level, tagged);
+    }
+}
+
+// ── Daemon (background agents) ───────────────────────────────────────
+
+impl App {
+    /// Drain pending background agent results and display them.
+    pub(crate) fn drain_daemon_events(&mut self) {
+        while let Ok(event) = self.daemon_rx.try_recv() {
+            self.log(
+                LogLevel::Info,
+                format!("🤖 [{}] {}", event.task_name, event.message),
+            );
+            self.daemon_results.push(event);
+            if self.daemon_results.len() > MAX_DAEMON_RESULTS {
+                self.daemon_results.remove(0);
+            }
+        }
+    }
+
+    /// Spawn a background daemon task, connecting it to the shared channel.
+    pub(crate) fn spawn_daemon_task(&mut self, def: daemon::DaemonTaskDef) {
+        let tx = self.daemon_tx.clone();
+        let openai = self.openai.clone();
+        let key = self.openai_key.clone();
+
+        // Each daemon task gets its own Rice connection (async).
+        let rice_handle = self.runtime.spawn(RiceStore::connect());
+
+        let handle = daemon::spawn_task(
+            def,
+            tx,
+            openai,
+            key,
+            rice_handle,
+            self.runtime.handle().clone(),
+        );
+        self.log(
+            LogLevel::Info,
+            format!(
+                "⚡ Daemon '{}' started (every {}s).",
+                handle.def.name, handle.def.interval_secs
+            ),
+        );
+        self.daemon_handles.push(handle);
+    }
+
+    /// Fire a one-shot background run of a daemon task definition.
+    pub(crate) fn run_daemon_oneshot(&mut self, def: daemon::DaemonTaskDef) {
+        let tx = self.daemon_tx.clone();
+        let openai = self.openai.clone();
+        let key = self.openai_key.clone();
+        let rice_handle = self.runtime.spawn(RiceStore::connect());
+
+        self.log(LogLevel::Info, format!("🚀 Running '{}' now...", def.name));
+        daemon::spawn_oneshot(
+            def,
+            tx,
+            openai,
+            key,
+            rice_handle,
+            self.runtime.handle().clone(),
+        );
     }
 }

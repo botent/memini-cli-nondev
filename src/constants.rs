@@ -33,3 +33,12 @@ pub const ACTIVE_AGENT_VAR: &str = "active_agent_name";
 pub const CUSTOM_AGENTS_VAR: &str = "custom_agents";
 /// Maximum number of messages kept in the conversation thread.
 pub const MAX_THREAD_MESSAGES: usize = 30;
+
+// ── Daemon / autonomous agent constants ──────────────────────────────
+
+/// Rice variable key for the persisted daemon schedule.
+pub const DAEMON_SCHEDULE_VAR: &str = "memini_daemon_schedule";
+/// Default interval (in seconds) for periodic agents.
+pub const DEFAULT_AGENT_INTERVAL_SECS: u64 = 1800; // 30 minutes
+/// How many most-recent daemon results to keep in memory.
+pub const MAX_DAEMON_RESULTS: usize = 50;

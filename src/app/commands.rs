@@ -40,6 +40,7 @@ impl App {
             "/agent" => self.handle_agent_command(parts.collect()),
             "/thread" => self.handle_thread_command(parts.collect()),
             "/memory" | "/mem" => self.handle_memory_command(parts.collect()),
+            "/daemon" | "/d" => self.handle_daemon_command(parts.collect()),
             _ => log_src!(self, LogLevel::Warn, format!("Unknown command: {cmd}")),
         }
 
@@ -62,6 +63,13 @@ impl App {
             "/thread                 Show conversation info",
             "/thread clear           Clear conversation thread",
             "/memory <query>         Search Rice memories",
+            "/daemon                 List background daemon tasks",
+            "/daemon run <name>      Run a daemon task now",
+            "/daemon start <name>    Start a periodic daemon",
+            "/daemon stop <name>     Stop a running daemon",
+            "/daemon add <n> <s> <p> Add custom daemon (name, secs, prompt)",
+            "/daemon remove <name>   Remove a daemon task",
+            "/daemon results [name]  Show recent daemon results",
             "/mcp                    List MCP servers",
             "/mcp connect <id>       Set active MCP",
             "/mcp ask <prompt>       Chat using MCP tools",
@@ -1265,6 +1273,270 @@ impl App {
                     format!("  \u{21B3} [{action}] {input} \u{2192} {outcome}"),
                 );
             }
+        }
+    }
+}
+
+// ── Daemon commands ──────────────────────────────────────────────────
+
+impl App {
+    pub(crate) fn handle_daemon_command(&mut self, args: Vec<&str>) {
+        if args.is_empty() {
+            self.list_daemons();
+            return;
+        }
+
+        match args[0] {
+            "list" => self.list_daemons(),
+            "run" => {
+                if let Some(name) = args.get(1) {
+                    self.run_daemon_now(name);
+                } else {
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /daemon run <name>".to_string()
+                    );
+                }
+            }
+            "start" => {
+                if let Some(name) = args.get(1) {
+                    self.start_daemon(name);
+                } else {
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /daemon start <name>".to_string()
+                    );
+                }
+            }
+            "stop" => {
+                if let Some(name) = args.get(1) {
+                    self.stop_daemon(name);
+                } else {
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /daemon stop <name>".to_string()
+                    );
+                }
+            }
+            "add" => {
+                // /daemon add <name> <interval_secs> <prompt...>
+                if args.len() >= 4 {
+                    let name = args[1].to_string();
+                    let interval: u64 = args[2]
+                        .parse()
+                        .unwrap_or(crate::constants::DEFAULT_AGENT_INTERVAL_SECS);
+                    let prompt = args[3..].join(" ");
+                    self.add_daemon_task(&name, interval, &prompt);
+                } else {
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /daemon add <name> <interval_secs> <prompt>".to_string()
+                    );
+                }
+            }
+            "remove" => {
+                if let Some(name) = args.get(1) {
+                    self.remove_daemon_task(name);
+                } else {
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /daemon remove <name>".to_string()
+                    );
+                }
+            }
+            "results" => {
+                let filter = args.get(1).copied();
+                self.show_daemon_results(filter);
+            }
+            other => {
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Unknown /daemon command: {other}")
+                );
+            }
+        }
+    }
+
+    fn list_daemons(&mut self) {
+        let builtins = super::daemon::builtin_tasks();
+
+        if self.daemon_handles.is_empty() && builtins.is_empty() {
+            self.log(LogLevel::Info, "No daemon tasks configured.".to_string());
+            return;
+        }
+
+        self.log(LogLevel::Info, "Background daemon tasks:".to_string());
+
+        // Show built-in tasks (even if not running).
+        for builtin in &builtins {
+            let running = self
+                .daemon_handles
+                .iter()
+                .any(|h| h.def.name == builtin.name);
+            let status = if running {
+                "🟢 running"
+            } else {
+                "⚪ available"
+            };
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "  ⚡ {} — {} [{}s interval, {}]",
+                    builtin.name, builtin.prompt, builtin.interval_secs, status
+                ),
+            );
+        }
+
+        // Show custom running daemons not in builtins.
+        let custom_daemons: Vec<_> = self
+            .daemon_handles
+            .iter()
+            .filter(|h| !builtins.iter().any(|b| b.name == h.def.name))
+            .map(|h| {
+                (
+                    h.def.name.clone(),
+                    h.def.prompt.clone(),
+                    h.def.interval_secs,
+                )
+            })
+            .collect();
+        for (name, prompt, interval) in &custom_daemons {
+            self.log(
+                LogLevel::Info,
+                format!("  ⚡ {name} — {prompt} [{interval}s interval, 🟢 running]"),
+            );
+        }
+    }
+
+    fn run_daemon_now(&mut self, name: &str) {
+        // Check if it's a running handle — wake it.
+        for handle in &self.daemon_handles {
+            if handle.def.name == name {
+                handle.wake.notify_one();
+                self.log(
+                    LogLevel::Info,
+                    format!("🚀 Woke daemon '{name}' for immediate run."),
+                );
+                return;
+            }
+        }
+
+        // Otherwise, find it in builtins and run as one-shot.
+        let builtins = super::daemon::builtin_tasks();
+        if let Some(def) = builtins.into_iter().find(|b| b.name == name) {
+            self.run_daemon_oneshot(def);
+            return;
+        }
+
+        log_src!(self, LogLevel::Warn, format!("Unknown daemon task: {name}"));
+    }
+
+    fn start_daemon(&mut self, name: &str) {
+        // Don't start if already running.
+        if self.daemon_handles.iter().any(|h| h.def.name == name) {
+            self.log(
+                LogLevel::Info,
+                format!("Daemon '{name}' is already running."),
+            );
+            return;
+        }
+
+        // Find in builtins.
+        let builtins = super::daemon::builtin_tasks();
+        if let Some(mut def) = builtins.into_iter().find(|b| b.name == name) {
+            def.paused = false;
+            self.spawn_daemon_task(def);
+            return;
+        }
+
+        log_src!(self, LogLevel::Warn, format!("Unknown daemon task: {name}"));
+    }
+
+    fn stop_daemon(&mut self, name: &str) {
+        if let Some(pos) = self.daemon_handles.iter().position(|h| h.def.name == name) {
+            let handle = self.daemon_handles.remove(pos);
+            handle.abort.abort();
+            self.log(LogLevel::Info, format!("🛑 Daemon '{name}' stopped."));
+        } else {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("No running daemon named '{name}'.")
+            );
+        }
+    }
+
+    fn add_daemon_task(&mut self, name: &str, interval: u64, prompt: &str) {
+        // Don't allow duplicate names.
+        let builtins = super::daemon::builtin_tasks();
+        if builtins.iter().any(|b| b.name == name)
+            || self.daemon_handles.iter().any(|h| h.def.name == name)
+        {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("A daemon named '{name}' already exists.")
+            );
+            return;
+        }
+
+        let def = super::daemon::DaemonTaskDef {
+            name: name.to_string(),
+            persona: format!(
+                "You are a background autonomous agent named '{name}'. \
+                 You run periodically and have access to the user's memory. \
+                 Be concise and actionable."
+            ),
+            prompt: prompt.to_string(),
+            interval_secs: interval,
+            paused: false,
+        };
+
+        self.spawn_daemon_task(def);
+        self.log(
+            LogLevel::Info,
+            format!("✨ Custom daemon '{name}' created and started (every {interval}s)."),
+        );
+    }
+
+    fn remove_daemon_task(&mut self, name: &str) {
+        // Stop if running.
+        if let Some(pos) = self.daemon_handles.iter().position(|h| h.def.name == name) {
+            let handle = self.daemon_handles.remove(pos);
+            handle.abort.abort();
+        }
+
+        self.log(LogLevel::Info, format!("🗑️ Daemon '{name}' removed."));
+    }
+
+    fn show_daemon_results(&mut self, filter: Option<&str>) {
+        let results: Vec<_> = self
+            .daemon_results
+            .iter()
+            .filter(|r| filter.is_none() || Some(r.task_name.as_str()) == filter)
+            .map(|r| (r.timestamp.clone(), r.task_name.clone(), r.message.clone()))
+            .collect();
+
+        if results.is_empty() {
+            self.log(
+                LogLevel::Info,
+                "No daemon results yet. Run /daemon run <name> to trigger one.".to_string(),
+            );
+            return;
+        }
+
+        self.log(
+            LogLevel::Info,
+            format!("Recent daemon results ({}):", results.len()),
+        );
+        for (ts, name, msg) in results.iter().rev().take(10) {
+            self.log(LogLevel::Info, format!("  [{ts}] 🤖 {name} — {msg}"));
         }
     }
 }

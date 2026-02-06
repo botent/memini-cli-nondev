@@ -24,7 +24,8 @@ impl App {
 
         // ── Status bar ───────────────────────────────────────────────
         let thread_turns = self.conversation_thread.len() / 2;
-        let header_line = Line::from(vec![
+        let daemon_count = self.daemon_handles.len();
+        let mut header_spans = vec![
             Span::styled("Agent: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 self.active_agent.name.clone(),
@@ -35,11 +36,6 @@ impl App {
                 self.mcp_status_label(),
                 Style::default().fg(self.mcp_status_color()),
             ),
-            Span::styled("  OpenAI: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                self.openai_status_label(),
-                Style::default().fg(self.openai_status_color()),
-            ),
             Span::styled("  Rice: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 self.rice.status_label(),
@@ -49,7 +45,14 @@ impl App {
                 format!("  Thread: {thread_turns}"),
                 Style::default().fg(Color::DarkGray),
             ),
-        ]);
+        ];
+        if daemon_count > 0 {
+            header_spans.push(Span::styled(
+                format!("  ⚡{daemon_count}"),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        let header_line = Line::from(header_spans);
         frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
         // ── Activity log ─────────────────────────────────────────────
