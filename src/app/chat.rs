@@ -13,6 +13,7 @@ use crate::openai::{
 use crate::rice::{agent_id, format_memories, system_prompt};
 
 use super::App;
+use super::log_src;
 use super::logging::{LogLevel, mask_key};
 
 impl App {
@@ -21,7 +22,7 @@ impl App {
         let key = match self.ensure_openai_key() {
             Ok(k) => k,
             Err(err) => {
-                self.log(LogLevel::Error, format!("OpenAI key missing: {err}"));
+                log_src!(self, LogLevel::Error, format!("OpenAI key missing: {err}"));
                 self.log(
                     LogLevel::Info,
                     "Use /openai set <key> or /key <key> to configure.".to_string(),
@@ -31,39 +32,31 @@ impl App {
         };
 
         if require_mcp && self.mcp_connection.is_none() {
-            self.log(LogLevel::Warn, "No active MCP connection.".to_string());
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "No active MCP connection.".to_string()
+            );
             return;
         }
 
         // Focus Rice on the current message.
         if let Err(err) = self.runtime.block_on(self.rice.focus(message)) {
-            self.log(LogLevel::Warn, format!("Rice focus failed: {err:#}"));
+            log_src!(self, LogLevel::Warn, format!("Rice focus failed: {err:#}"));
         }
 
-        // Compute embedding for memory recall.
-        let embedding = match self.runtime.block_on(self.openai.embedding(&key, message)) {
-            Ok(vec) => Some(vec),
-            Err(err) => {
-                self.log(LogLevel::Warn, format!("Embedding failed: {err:#}"));
-                None
-            }
-        };
-
-        // Recall relevant memories.
-        let memories = if let Some(embed) = embedding.clone() {
+        // Recall relevant memories (Rice computes embeddings server-side).
+        let memories =
             match self
                 .runtime
-                .block_on(self.rice.reminisce(embed, self.memory_limit, message))
+                .block_on(self.rice.reminisce(vec![], self.memory_limit, message))
             {
                 Ok(traces) => traces,
                 Err(err) => {
-                    self.log(LogLevel::Warn, format!("Rice recall failed: {err:#}"));
+                    log_src!(self, LogLevel::Warn, format!("Rice recall failed: {err:#}"));
                     Vec::new()
                 }
-            }
-        } else {
-            Vec::new()
-        };
+            };
 
         // Build LLM input.
         let memory_context = format_memories(&memories);
@@ -77,9 +70,10 @@ impl App {
         let tools = match self.openai_tools_for_mcp(require_mcp) {
             Ok(t) => t,
             Err(err) => {
-                self.log(
+                log_src!(
+                    self,
                     LogLevel::Error,
-                    format!("Failed to load MCP tools: {err:#}"),
+                    format!("Failed to load MCP tools: {err:#}")
                 );
                 return;
             }
@@ -93,7 +87,11 @@ impl App {
             {
                 Ok(r) => r,
                 Err(err) => {
-                    self.log(LogLevel::Error, format!("OpenAI request failed: {err:#}"));
+                    log_src!(
+                        self,
+                        LogLevel::Error,
+                        format!("OpenAI request failed: {err:#}")
+                    );
                     return;
                 }
             };
@@ -109,7 +107,7 @@ impl App {
         // Tool-call loop.
         while !tool_calls.is_empty() {
             if tool_loop_limit_reached(tool_loops) {
-                self.log(LogLevel::Warn, "Tool loop limit reached.".to_string());
+                log_src!(self, LogLevel::Warn, "Tool loop limit reached.".to_string());
                 break;
             }
             tool_loops += 1;
@@ -133,7 +131,11 @@ impl App {
                 {
                     Ok(r) => r,
                     Err(err) => {
-                        self.log(LogLevel::Error, format!("OpenAI request failed: {err:#}"));
+                        log_src!(
+                            self,
+                            LogLevel::Error,
+                            format!("OpenAI request failed: {err:#}")
+                        );
                         break;
                     }
                 };
@@ -147,24 +149,24 @@ impl App {
 
         // Display result.
         if output_text.is_empty() {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                "OpenAI returned no text output.".to_string(),
+                "OpenAI returned no text output.".to_string()
             );
         } else {
             self.log(LogLevel::Info, format!("Assistant: {output_text}"));
         }
 
-        // Commit trace to Rice.
-        let commit_embedding = embedding.unwrap_or_default();
+        // Commit trace to Rice (Rice computes embeddings server-side).
         if let Err(err) = self.runtime.block_on(self.rice.commit_trace(
             message,
             &output_text,
             "chat",
-            commit_embedding,
+            vec![],
             agent_id(),
         )) {
-            self.log(LogLevel::Warn, format!("Rice commit failed: {err:#}"));
+            log_src!(self, LogLevel::Warn, format!("Rice commit failed: {err:#}"));
         }
     }
 

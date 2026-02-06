@@ -2,10 +2,10 @@
 
 use std::env;
 
-use anyhow::{anyhow, Context, Result};
-use rice_sdk::rice_core::config::{StateConfig, StorageConfig};
+use anyhow::{Context, Result, anyhow};
+use rice_sdk::Client;
+use rice_sdk::rice_core::config::{RiceConfig, StateConfig, StorageConfig};
 use rice_sdk::rice_state::proto::Trace;
-use rice_sdk::{Client, RiceConfig};
 use serde_json::Value;
 
 use crate::constants::{APP_NAME, DEFAULT_RUN_ID};
@@ -153,7 +153,12 @@ impl RiceStore {
             .as_mut()
             .ok_or_else(|| anyhow!("Rice state module not enabled"))?;
         let response = state
-            .reminisce(embedding, limit, query_text.to_string(), self.run_id.clone())
+            .reminisce(
+                embedding,
+                limit,
+                query_text.to_string(),
+                self.run_id.clone(),
+            )
             .await
             .context("reminisce")?;
         Ok(response.traces)
@@ -194,36 +199,28 @@ fn rice_run_id() -> String {
 }
 
 fn rice_config_from_env() -> Option<RiceConfig> {
-    let mut config = RiceConfig::default();
-    let mut enabled = false;
+    let state = env_first(&["RICE_STATE_URL", "STATE_INSTANCE_URL"]).map(|url| StateConfig {
+        enabled: true,
+        base_url: Some(normalize_url(&url)),
+        auth_token: env_first(&["RICE_STATE_TOKEN", "STATE_AUTH_TOKEN"]),
+        llm_mode: None,
+        flux: None,
+    });
 
-    if let Some(state_url) = env_first(&["RICE_STATE_URL", "STATE_INSTANCE_URL"]) {
-        enabled = true;
-        config.state = Some(StateConfig {
+    let storage =
+        env_first(&["RICE_STORAGE_URL", "STORAGE_INSTANCE_URL"]).map(|url| StorageConfig {
             enabled: true,
-            base_url: Some(normalize_url(&state_url)),
-            auth_token: env_first(&["RICE_STATE_TOKEN", "STATE_AUTH_TOKEN"]),
-            llm_mode: None,
-            flux: None,
-        });
-    }
-
-    if let Some(storage_url) = env_first(&["RICE_STORAGE_URL", "STORAGE_INSTANCE_URL"]) {
-        enabled = true;
-        config.storage = Some(StorageConfig {
-            enabled: true,
-            base_url: Some(normalize_url(&storage_url)),
+            base_url: Some(normalize_url(&url)),
             auth_token: env_first(&["RICE_STORAGE_TOKEN", "STORAGE_AUTH_TOKEN"]),
             username: None,
             password: None,
         });
+
+    if state.is_none() && storage.is_none() {
+        return None;
     }
 
-    if enabled {
-        Some(config)
-    } else {
-        None
-    }
+    Some(RiceConfig { state, storage })
 }
 
 pub fn format_memories(traces: &[Trace]) -> String {
@@ -251,10 +248,17 @@ pub fn format_memories(traces: &[Trace]) -> String {
 }
 
 pub fn system_prompt(require_mcp: bool) -> String {
+    let now = chrono::Local::now().format("%A, %B %e, %Y at %H:%M");
     if require_mcp {
-        "You are Memini, a concise CLI assistant. Use available tools when needed to answer the user's request. Summarize results clearly.".to_string()
+        format!(
+            "You are Memini, a concise CLI assistant. The current date and time is {now}. \
+             Use available tools when needed to answer the user's request. Summarize results clearly."
+        )
     } else {
-        "You are Memini, a concise CLI assistant. Use any provided memory context when helpful and answer clearly.".to_string()
+        format!(
+            "You are Memini, a concise CLI assistant. The current date and time is {now}. \
+             Use any provided memory context when helpful and answer clearly."
+        )
     }
 }
 

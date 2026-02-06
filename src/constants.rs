@@ -15,8 +15,6 @@ pub const ACTIVE_MCP_VAR: &str = "active_mcp";
 pub const DEFAULT_RUN_ID: &str = "memini";
 /// Default OpenAI chat model.
 pub const DEFAULT_OPENAI_MODEL: &str = "gpt-4o-mini";
-/// Default OpenAI embedding model.
-pub const DEFAULT_OPENAI_EMBED_MODEL: &str = "text-embedding-3-small";
 /// Default OpenAI API base URL.
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 

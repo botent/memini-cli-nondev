@@ -1,13 +1,11 @@
 //! OpenAI API client — chat responses, embeddings, and response helpers.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client as HttpClient;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::constants::{
-    DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_EMBED_MODEL, DEFAULT_OPENAI_MODEL, MAX_TOOL_LOOPS,
-};
+use crate::constants::{DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL, MAX_TOOL_LOOPS};
 use crate::util::env_first;
 
 /// A single tool-call extracted from an OpenAI response.
@@ -22,7 +20,6 @@ pub struct ToolCall {
 #[derive(Clone)]
 pub struct OpenAiClient {
     pub model: String,
-    pub embed_model: String,
     pub base_url: String,
     http_client: HttpClient,
 }
@@ -31,40 +28,13 @@ impl OpenAiClient {
     pub fn new() -> Self {
         let model = env_first(&["OPENAI_MODEL", "MEMINI_OPENAI_MODEL"])
             .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
-        let embed_model = env_first(&["OPENAI_EMBED_MODEL", "MEMINI_OPENAI_EMBED_MODEL"])
-            .unwrap_or_else(|| DEFAULT_OPENAI_EMBED_MODEL.to_string());
         let base_url = env_first(&["OPENAI_BASE_URL", "OPENAI_API_BASE"])
             .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string());
         OpenAiClient {
             model,
-            embed_model,
             base_url: base_url.trim_end_matches('/').to_string(),
             http_client: HttpClient::new(),
         }
-    }
-
-    pub async fn embedding(&self, key: &str, text: &str) -> Result<Vec<f32>> {
-        let body = json!({
-            "model": self.embed_model,
-            "input": text
-        });
-        let response = self.request(key, "embeddings", body).await?;
-        let data = response
-            .get("data")
-            .and_then(|value| value.as_array())
-            .ok_or_else(|| anyhow!("Missing embeddings data"))?;
-        let first = data
-            .get(0)
-            .and_then(|value| value.get("embedding"))
-            .and_then(|value| value.as_array())
-            .ok_or_else(|| anyhow!("Missing embedding vector"))?;
-        let mut embedding = Vec::with_capacity(first.len());
-        for value in first {
-            if let Some(num) = value.as_f64() {
-                embedding.push(num as f32);
-            }
-        }
-        Ok(embedding)
     }
 
     pub async fn response(
@@ -162,7 +132,8 @@ pub fn extract_tool_calls(output_items: &[Value]) -> Vec<ToolCall> {
             .get("arguments")
             .and_then(|v| v.as_str())
             .unwrap_or("{}");
-        let arguments = serde_json::from_str(raw_args).unwrap_or_else(|_| json!({"_raw": raw_args}));
+        let arguments =
+            serde_json::from_str(raw_args).unwrap_or_else(|_| json!({"_raw": raw_args}));
         calls.push(ToolCall {
             name,
             arguments,

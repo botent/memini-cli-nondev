@@ -116,10 +116,10 @@ impl App {
     /// Load persisted state from Rice on startup.
     fn bootstrap(&mut self) {
         if let Err(err) = self.load_openai_from_rice() {
-            self.log(LogLevel::Warn, format!("OpenAI key load skipped: {err}"));
+            log_src!(self, LogLevel::Warn, format!("OpenAI key load skipped: {err}"));
         }
         if let Err(err) = self.load_active_mcp_from_rice() {
-            self.log(LogLevel::Warn, format!("Active MCP load skipped: {err}"));
+            log_src!(self, LogLevel::Warn, format!("Active MCP load skipped: {err}"));
         }
     }
 
@@ -217,6 +217,28 @@ impl App {
 
 // ── Logging ──────────────────────────────────────────────────────────
 
+/// Log a `Warn`/`Error` message, attaching `[file:line]` in debug-logs builds.
+///
+/// In release (no `debug-logs` feature) this behaves like `self.log()`.
+///
+/// ```ignore
+/// log_src!(self, LogLevel::Warn, format!("something broke: {err:#}"));
+/// ```
+macro_rules! log_src {
+    ($app:expr, $level:expr, $msg:expr) => {{
+        #[cfg(feature = "debug-logs")]
+        {
+            let loc = format!("{}:{}", file!(), line!());
+            $app.log_with_src($level, $msg, &loc);
+        }
+        #[cfg(not(feature = "debug-logs"))]
+        {
+            $app.log($level, $msg);
+        }
+    }};
+}
+pub(crate) use log_src;
+
 impl App {
     /// Append a message to the activity log.
     pub(crate) fn log(&mut self, level: LogLevel, message: String) {
@@ -230,5 +252,15 @@ impl App {
             let overflow = self.logs.len() - MAX_LOGS;
             self.logs.drain(0..overflow);
         }
+    }
+
+    /// Append a message with a source location suffix (debug-logs builds only).
+    #[cfg(feature = "debug-logs")]
+    pub(crate) fn log_with_src(&mut self, level: LogLevel, message: String, src: &str) {
+        let tagged = match level {
+            LogLevel::Warn | LogLevel::Error => format!("{message}  [{src}]"),
+            _ => message,
+        };
+        self.log(level, tagged);
     }
 }

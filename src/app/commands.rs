@@ -16,6 +16,7 @@ use crate::openai::format_json;
 use crate::rice::RiceStatus;
 
 use super::App;
+use super::log_src;
 use super::logging::{LogLevel, mask_key};
 use super::store::persist_local_mcp_store;
 
@@ -35,7 +36,7 @@ impl App {
             "/openai" => self.handle_openai_command(parts.collect()),
             "/key" => self.handle_key_command(parts.collect()),
             "/rice" => self.handle_rice_command(),
-            _ => self.log(LogLevel::Warn, format!("Unknown command: {cmd}")),
+            _ => log_src!(self, LogLevel::Warn, format!("Unknown command: {cmd}")),
         }
 
         Ok(())
@@ -91,7 +92,7 @@ impl App {
                 if let Some(target) = args.get(1) {
                     self.connect_mcp(target);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /mcp connect <id>".to_string());
+                    log_src!(self, LogLevel::Warn, "Usage: /mcp connect <id>".to_string());
                 }
             }
             "disconnect" => self.disconnect_mcp(),
@@ -107,14 +108,14 @@ impl App {
                     let prompt = args[1..].join(" ");
                     self.handle_chat_message(&prompt, true);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /mcp ask <prompt>".to_string());
+                    log_src!(self, LogLevel::Warn, "Usage: /mcp ask <prompt>".to_string());
                 }
             }
             "auth" => {
                 if let Some(target) = args.get(1) {
                     self.authenticate_mcp(target);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /mcp auth <id>".to_string());
+                    log_src!(self, LogLevel::Warn, "Usage: /mcp auth <id>".to_string());
                 }
             }
             "auth-code" => {
@@ -123,9 +124,10 @@ impl App {
                     let code_or_url = args[2..].join(" ");
                     self.complete_oauth_manual(&id, &code_or_url);
                 } else {
-                    self.log(
+                    log_src!(
+                        self,
                         LogLevel::Warn,
-                        "Usage: /mcp auth-code <id> <url-or-code>".to_string(),
+                        "Usage: /mcp auth-code <id> <url-or-code>".to_string()
                     );
                 }
             }
@@ -135,26 +137,42 @@ impl App {
                     let token = args[2];
                     self.store_mcp_token(id, token);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /mcp token <id> <token>".to_string());
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /mcp token <id> <token>".to_string()
+                    );
                 }
             }
             "token-clear" => {
                 if let Some(target) = args.get(1) {
                     self.clear_mcp_token(target);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /mcp token-clear <id>".to_string());
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        "Usage: /mcp token-clear <id>".to_string()
+                    );
                 }
             }
             "reload" => self.reload_mcp_config(),
             other => {
-                self.log(LogLevel::Warn, format!("Unknown /mcp command: {other}"));
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Unknown /mcp command: {other}")
+                );
             }
         }
     }
 
     fn list_mcp_servers(&mut self) {
         if self.mcp_config.servers.is_empty() {
-            self.log(LogLevel::Warn, "No MCP servers configured.".to_string());
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "No MCP servers configured.".to_string()
+            );
             return;
         }
 
@@ -180,15 +198,20 @@ impl App {
 
     fn connect_mcp(&mut self, target: &str) {
         let Some(server) = self.mcp_config.find_by_id_or_name(target) else {
-            self.log(LogLevel::Warn, format!("Unknown MCP server: {target}"));
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Unknown MCP server: {target}")
+            );
             return;
         };
 
         let transport = server.transport.as_deref().unwrap_or("http");
         if transport != "http" {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Transport '{transport}' not supported yet."),
+                format!("Transport '{transport}' not supported yet.")
             );
             return;
         }
@@ -197,9 +220,10 @@ impl App {
         if bearer.is_none() {
             if let Some(auth) = &server.auth {
                 if auth.auth_type == "oauth_browser" {
-                    self.log(
+                    log_src!(
+                        self,
                         LogLevel::Warn,
-                        "No bearer token found. Run /mcp auth <id> for OAuth.".to_string(),
+                        "No bearer token found. Run /mcp auth <id> for OAuth.".to_string()
                     );
                 }
             }
@@ -220,7 +244,11 @@ impl App {
                     "explicit",
                 ));
                 if let Err(err) = store_result {
-                    self.log(LogLevel::Warn, format!("Failed to persist MCP: {err:#}"));
+                    log_src!(
+                        self,
+                        LogLevel::Warn,
+                        format!("Failed to persist MCP: {err:#}")
+                    );
                 }
 
                 let token_hint = bearer.as_ref().map(|token| mask_key(token));
@@ -238,7 +266,11 @@ impl App {
                 self.list_mcp_tools();
             }
             Err(err) => {
-                self.log(LogLevel::Error, format!("Failed to connect MCP: {err:#}"));
+                log_src!(
+                    self,
+                    LogLevel::Error,
+                    format!("Failed to connect MCP: {err:#}")
+                );
             }
         }
     }
@@ -256,7 +288,11 @@ impl App {
     pub(crate) fn list_mcp_tools(&mut self) {
         let tools_result = {
             let Some(connection) = self.mcp_connection.as_mut() else {
-                self.log(LogLevel::Warn, "No active MCP connection.".to_string());
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    "No active MCP connection.".to_string()
+                );
                 return;
             };
             self.runtime.block_on(mcp::refresh_tools(connection))
@@ -274,29 +310,42 @@ impl App {
                 }
             }
             Err(err) => {
-                self.log(LogLevel::Error, format!("Failed to list tools: {err:#}"));
+                log_src!(
+                    self,
+                    LogLevel::Error,
+                    format!("Failed to list tools: {err:#}")
+                );
             }
         }
     }
 
     fn call_mcp_tool(&mut self, tool: Option<&str>, args: &[&str]) {
         let Some(tool) = tool else {
-            self.log(LogLevel::Warn, "Usage: /mcp call <tool> <json>".to_string());
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "Usage: /mcp call <tool> <json>".to_string()
+            );
             return;
         };
 
         let tool_cache = match self.mcp_connection.as_ref() {
             Some(connection) => connection.tool_cache.clone(),
             None => {
-                self.log(LogLevel::Warn, "No active MCP connection.".to_string());
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    "No active MCP connection.".to_string()
+                );
                 return;
             }
         };
 
         if !tool_cache.is_empty() && !tool_cache.iter().any(|t| t.name == tool) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Tool '{tool}' not in cached list; attempting anyway."),
+                format!("Tool '{tool}' not in cached list; attempting anyway.")
             );
         }
 
@@ -307,7 +356,7 @@ impl App {
             match serde_json::from_str::<Value>(&raw) {
                 Ok(value) => value,
                 Err(err) => {
-                    self.log(LogLevel::Error, format!("Invalid JSON args: {err}"));
+                    log_src!(self, LogLevel::Error, format!("Invalid JSON args: {err}"));
                     return;
                 }
             }
@@ -320,7 +369,7 @@ impl App {
                 self.log(LogLevel::Info, rendered);
             }
             Err(err) => {
-                self.log(LogLevel::Error, format!("Tool call failed: {err:#}"));
+                log_src!(self, LogLevel::Error, format!("Tool call failed: {err:#}"));
             }
         }
     }
@@ -364,19 +413,28 @@ impl App {
 
     fn authenticate_mcp(&mut self, target: &str) {
         let Some(server) = self.mcp_config.find_by_id_or_name(target) else {
-            self.log(LogLevel::Warn, format!("Unknown MCP server: {target}"));
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Unknown MCP server: {target}")
+            );
             return;
         };
 
         let Some(auth) = &server.auth else {
-            self.log(LogLevel::Warn, "No auth config for server.".to_string());
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "No auth config for server.".to_string()
+            );
             return;
         };
 
         if auth.auth_type != "oauth_browser" {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                "Auth flow only supports oauth_browser.".to_string(),
+                "Auth flow only supports oauth_browser.".to_string()
             );
             return;
         }
@@ -403,9 +461,10 @@ impl App {
         let (auth_url, pending) = match prepare_result {
             Ok(result) => result,
             Err(err) => {
-                self.log(
+                log_src!(
+                    self,
                     LogLevel::Error,
-                    format!("OAuth preparation failed: {err:#}"),
+                    format!("OAuth preparation failed: {err:#}")
                 );
                 return;
             }
@@ -419,7 +478,11 @@ impl App {
         );
         self.log(LogLevel::Info, format!("URL: {auth_url}"));
         if let Err(err) = open::that(&auth_url) {
-            self.log(LogLevel::Warn, format!("Could not open browser: {err}"));
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Could not open browser: {err}")
+            );
         }
 
         self.log(
@@ -448,7 +511,11 @@ impl App {
                 self.log(LogLevel::Info, "OAuth complete. Token stored.".to_string());
             }
             Err(err) => {
-                self.log(LogLevel::Warn, format!("Callback not received: {err:#}"));
+                log_src!(
+                    self,
+                    LogLevel::Warn,
+                    format!("Callback not received: {err:#}")
+                );
                 self.log(
                     LogLevel::Info,
                     format!(
@@ -463,20 +530,22 @@ impl App {
 
     fn complete_oauth_manual(&mut self, server_id: &str, raw_input: &str) {
         let Some((pending_id, pending)) = &self.pending_oauth else {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                "No pending OAuth flow. Run /mcp auth <id> first.".to_string(),
+                "No pending OAuth flow. Run /mcp auth <id> first.".to_string()
             );
             return;
         };
 
         if pending_id != server_id {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
                 format!(
                     "Pending OAuth is for '{}', not '{server_id}'. Run /mcp auth {server_id} first.",
                     pending_id
-                ),
+                )
             );
             return;
         }
@@ -512,9 +581,10 @@ impl App {
                 );
             }
             Err(err) => {
-                self.log(
+                log_src!(
+                    self,
                     LogLevel::Error,
-                    format!("Manual token exchange failed: {err:#}"),
+                    format!("Manual token exchange failed: {err:#}")
                 );
             }
         }
@@ -565,9 +635,10 @@ impl App {
             .client_ids
             .insert(id.to_string(), client_id.to_string());
         if let Err(err) = persist_local_mcp_store(&self.local_mcp_store) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to persist local client id: {err:#}"),
+                format!("Failed to persist local client id: {err:#}")
             );
         }
         let key = format!("mcp_client_{id}");
@@ -576,9 +647,10 @@ impl App {
             Value::String(client_id.to_string()),
             "explicit",
         )) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to store client id: {err:#}"),
+                format!("Failed to store client id: {err:#}")
             );
         }
     }
@@ -589,9 +661,10 @@ impl App {
             .refresh_tokens
             .insert(id.to_string(), token.to_string());
         if let Err(err) = persist_local_mcp_store(&self.local_mcp_store) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to persist local refresh token: {err:#}"),
+                format!("Failed to persist local refresh token: {err:#}")
             );
         }
         if let Err(err) = self.runtime.block_on(self.rice.set_variable(
@@ -599,9 +672,10 @@ impl App {
             Value::String(token.to_string()),
             "explicit",
         )) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to store refresh token: {err:#}"),
+                format!("Failed to store refresh token: {err:#}")
             );
         }
     }
@@ -612,9 +686,10 @@ impl App {
             .tokens
             .insert(id.to_string(), token.to_string());
         if let Err(err) = persist_local_mcp_store(&self.local_mcp_store) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to persist local token: {err:#}"),
+                format!("Failed to persist local token: {err:#}")
             );
         }
         if let Err(err) = self.runtime.block_on(self.rice.set_variable(
@@ -622,9 +697,10 @@ impl App {
             Value::String(token.to_string()),
             "explicit",
         )) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Stored token locally, but Rice persistence failed: {err:#}"),
+                format!("Stored token locally, but Rice persistence failed: {err:#}")
             );
         } else {
             self.log(
@@ -638,13 +714,18 @@ impl App {
         let key = format!("mcp_token_{id}");
         self.local_mcp_store.tokens.remove(id);
         if let Err(err) = persist_local_mcp_store(&self.local_mcp_store) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Warn,
-                format!("Failed to update local token cache: {err:#}"),
+                format!("Failed to update local token cache: {err:#}")
             );
         }
         if let Err(err) = self.runtime.block_on(self.rice.delete_variable(&key)) {
-            self.log(LogLevel::Error, format!("Failed to delete token: {err:#}"));
+            log_src!(
+                self,
+                LogLevel::Error,
+                format!("Failed to delete token: {err:#}")
+            );
             return;
         }
         self.log(LogLevel::Info, format!("Cleared MCP token for {id}."));
@@ -689,9 +770,10 @@ impl App {
                 );
             }
             Err(err) => {
-                self.log(
+                log_src!(
+                    self,
                     LogLevel::Error,
-                    format!("Failed to reload MCP config: {err:#}"),
+                    format!("Failed to reload MCP config: {err:#}")
                 );
             }
         }
@@ -712,12 +794,16 @@ impl App {
                 if let Some(key) = args.get(1) {
                     self.persist_openai_key(key);
                 } else {
-                    self.log(LogLevel::Warn, "Usage: /openai set <key>".to_string());
+                    log_src!(self, LogLevel::Warn, "Usage: /openai set <key>".to_string());
                 }
             }
             "clear" => self.clear_openai_key(),
             "import-env" => self.import_openai_env(),
-            other => self.log(LogLevel::Warn, format!("Unknown /openai command: {other}")),
+            other => log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Unknown /openai command: {other}")
+            ),
         }
     }
 
@@ -743,9 +829,10 @@ impl App {
             Value::String(key.to_string()),
             "explicit",
         )) {
-            self.log(
+            log_src!(
+                self,
                 LogLevel::Error,
-                format!("Failed to store OpenAI key: {err:#}"),
+                format!("Failed to store OpenAI key: {err:#}")
             );
             return;
         }
@@ -760,7 +847,11 @@ impl App {
             .runtime
             .block_on(self.rice.delete_variable(OPENAI_KEY_VAR))
         {
-            self.log(LogLevel::Error, format!("Failed to delete key: {err:#}"));
+            log_src!(
+                self,
+                LogLevel::Error,
+                format!("Failed to delete key: {err:#}")
+            );
             return;
         }
 
@@ -772,7 +863,7 @@ impl App {
     fn import_openai_env(&mut self) {
         match env::var("OPENAI_API_KEY") {
             Ok(key) => self.persist_openai_key(&key),
-            Err(_) => self.log(LogLevel::Warn, "OPENAI_API_KEY not set.".to_string()),
+            Err(_) => log_src!(self, LogLevel::Warn, "OPENAI_API_KEY not set.".to_string()),
         }
     }
 }
@@ -786,7 +877,7 @@ impl App {
                 self.log(LogLevel::Info, "Rice is connected.".to_string());
             }
             RiceStatus::Disabled(reason) => {
-                self.log(LogLevel::Warn, format!("Rice disabled: {reason}"));
+                log_src!(self, LogLevel::Warn, format!("Rice disabled: {reason}"));
                 self.log(
                     LogLevel::Info,
                     "Set STATE_INSTANCE_URL/STATE_AUTH_TOKEN in .env to enable Rice State."
