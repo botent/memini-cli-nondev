@@ -36,7 +36,7 @@ impl App {
             "/mcp" => self.handle_mcp_command(parts.collect()),
             "/openai" => self.handle_openai_command(parts.collect()),
             "/key" => self.handle_key_command(parts.collect()),
-            "/rice" => self.handle_rice_command(),
+            "/rice" => self.handle_rice_command(parts.collect()),
             "/agent" => self.handle_agent_command(parts.collect()),
             "/thread" => self.handle_thread_command(parts.collect()),
             "/memory" | "/mem" => self.handle_memory_command(parts.collect()),
@@ -67,12 +67,12 @@ impl App {
 impl App {
     fn show_help(&mut self) {
         let lines = [
-            "---  Memini -- your AI with a memory  ---",
+            "━━━  ◆ Memini — your AI with a memory  ━━━",
             "",
-            "Just type to chat -- Memini remembers everything via Rice.",
+            "Just type to chat — Memini remembers everything via Rice.",
             "",
             "Chat & Memory",
-            "  (just type)             Talk to your AI -- it recalls past chats",
+            "  (just type)             Talk to your AI — it recalls past chats",
             "  /memory <query>         Search your saved memories",
             "  /thread                 Show current conversation info",
             "  /thread clear           Start a fresh conversation",
@@ -120,6 +120,7 @@ impl App {
             "  /openai set <key>       Save your OpenAI key (stored in Rice)",
             "  /key <key>              Quick set OpenAI key",
             "  /rice                   Show Rice memory connection status",
+            "  /rice setup             Interactive Rice environment wizard",
             "  /clear                  Clear the screen",
             "  /quit                   Exit Memini",
         ];

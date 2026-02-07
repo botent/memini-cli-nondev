@@ -56,6 +56,15 @@ pub(crate) enum ViewMode {
     AgentSession(usize),
 }
 
+/// Step in the interactive Rice environment setup wizard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RiceSetupStep {
+    StateUrl,
+    StateToken,
+    StorageUrl,
+    StorageToken,
+}
+
 // ── Application state ────────────────────────────────────────────────
 
 /// Top-level application state.
@@ -103,6 +112,14 @@ pub struct App {
     pub(crate) grid_selected: usize, // index into grid cells (0..8 for 3×3)
     // Chat-in-progress flag (prevents double-sends and shows thinking UI)
     pub(crate) chat_busy: bool,
+    // Tick counter for animations (incremented every frame)
+    pub(crate) tick_count: u64,
+    // Interactive Rice setup wizard state
+    pub(crate) rice_setup_step: Option<RiceSetupStep>,
+    pub(crate) rice_setup_state_url: String,
+    pub(crate) rice_setup_state_token: String,
+    pub(crate) rice_setup_storage_url: String,
+    pub(crate) rice_setup_storage_token: String,
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────
@@ -155,6 +172,12 @@ impl App {
             view_mode: ViewMode::Dashboard,
             grid_selected: 0,
             chat_busy: false,
+            tick_count: 0,
+            rice_setup_step: None,
+            rice_setup_state_url: String::new(),
+            rice_setup_state_token: String::new(),
+            rice_setup_storage_url: String::new(),
+            rice_setup_storage_token: String::new(),
         };
 
         app.log(
@@ -166,11 +189,15 @@ impl App {
         );
         app.log(
             LogLevel::Info,
-            "Welcome to Memini.  Just type to chat -- I remember everything via Rice.".to_string(),
+            "✨ Welcome to Memini — your AI with a memory.".to_string(),
         );
         app.log(
             LogLevel::Info,
-            "Type /help to see what I can do.".to_string(),
+            "Just type to chat. I remember everything via Rice. 🌾".to_string(),
+        );
+        app.log(
+            LogLevel::Info,
+            "Type /help for commands, /rice setup to configure Rice.".to_string(),
         );
 
         app.bootstrap();
@@ -277,6 +304,7 @@ impl App {
     /// Called on every tick of the main loop (before draw) so that
     /// background events are processed even when no user input arrives.
     pub fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
         self.drain_daemon_events();
     }
 
@@ -353,7 +381,10 @@ impl App {
             }
 
             KeyCode::Esc => {
-                if !self.input.is_empty() {
+                if self.rice_setup_step.is_some() {
+                    self.rice_setup_step = None;
+                    self.log(LogLevel::Info, "Rice setup cancelled.".to_string());
+                } else if !self.input.is_empty() {
                     self.input.clear();
                     self.cursor = 0;
                     self.history_index = None;
@@ -442,6 +473,12 @@ impl App {
         self.input.clear();
         self.cursor = 0;
         self.history_index = None;
+
+        // ── Rice setup wizard intercept ──────────────────────────────
+        if let Some(step) = self.rice_setup_step.clone() {
+            self.handle_rice_setup_input(&line, step);
+            return Ok(());
+        }
 
         if line.is_empty() {
             return Ok(());
@@ -730,6 +767,210 @@ impl App {
         if self.agent_windows.iter().any(|w| w.id == id) {
             self.focused_window = Some(id);
             self.view_mode = ViewMode::AgentSession(id);
+        }
+    }
+}
+
+// ── Rice setup wizard ────────────────────────────────────────────────
+
+impl App {
+    /// Start the interactive Rice setup wizard.
+    pub(crate) fn start_rice_setup(&mut self) {
+        self.rice_setup_state_url.clear();
+        self.rice_setup_state_token.clear();
+        self.rice_setup_storage_url.clear();
+        self.rice_setup_storage_token.clear();
+        self.rice_setup_step = Some(RiceSetupStep::StateUrl);
+        self.log(
+            LogLevel::Info,
+            "🔧 Rice Setup Wizard — let's get you connected!".to_string(),
+        );
+        self.log(
+            LogLevel::Info,
+            "Enter your Rice State URL (e.g. grpc.example.com:80), or press Enter to skip:"
+                .to_string(),
+        );
+    }
+
+    /// Handle a line of user input during the rice setup wizard.
+    fn handle_rice_setup_input(&mut self, line: &str, step: RiceSetupStep) {
+        let value = line.trim().to_string();
+
+        // Allow cancellation at any step.
+        if value == "/cancel" || value == "/quit" {
+            self.rice_setup_step = None;
+            self.log(LogLevel::Info, "Rice setup cancelled.".to_string());
+            return;
+        }
+
+        match step {
+            RiceSetupStep::StateUrl => {
+                self.rice_setup_state_url = value;
+                self.rice_setup_step = Some(RiceSetupStep::StateToken);
+                if self.rice_setup_state_url.is_empty() {
+                    self.log(
+                        LogLevel::Info,
+                        "Skipped State URL. Enter Rice State auth token (or Enter to skip):"
+                            .to_string(),
+                    );
+                } else {
+                    self.log(
+                        LogLevel::Info,
+                        format!("✓ State URL: {}", self.rice_setup_state_url),
+                    );
+                    self.log(
+                        LogLevel::Info,
+                        "Enter your Rice State auth token:".to_string(),
+                    );
+                }
+            }
+            RiceSetupStep::StateToken => {
+                self.rice_setup_state_token = value;
+                self.rice_setup_step = Some(RiceSetupStep::StorageUrl);
+                if !self.rice_setup_state_token.is_empty() {
+                    self.log(LogLevel::Info, "✓ State token saved.".to_string());
+                }
+                self.log(
+                    LogLevel::Info,
+                    "Enter Rice Storage URL (optional, press Enter to skip):".to_string(),
+                );
+            }
+            RiceSetupStep::StorageUrl => {
+                self.rice_setup_storage_url = value;
+                self.rice_setup_step = Some(RiceSetupStep::StorageToken);
+                if self.rice_setup_storage_url.is_empty() {
+                    self.log(
+                        LogLevel::Info,
+                        "Skipped Storage URL. Enter Storage auth token (or Enter to skip):"
+                            .to_string(),
+                    );
+                } else {
+                    self.log(
+                        LogLevel::Info,
+                        format!("✓ Storage URL: {}", self.rice_setup_storage_url),
+                    );
+                    self.log(
+                        LogLevel::Info,
+                        "Enter your Rice Storage auth token:".to_string(),
+                    );
+                }
+            }
+            RiceSetupStep::StorageToken => {
+                self.rice_setup_storage_token = value;
+                self.rice_setup_step = None;
+                if !self.rice_setup_storage_token.is_empty() {
+                    self.log(LogLevel::Info, "✓ Storage token saved.".to_string());
+                }
+                self.finish_rice_setup();
+            }
+        }
+    }
+
+    /// Write the collected Rice env vars to `.env` and reconnect.
+    fn finish_rice_setup(&mut self) {
+        use std::io::Write;
+
+        let env_path = std::path::Path::new(".env");
+
+        // Read existing .env content so we can merge.
+        let existing = std::fs::read_to_string(env_path).unwrap_or_default();
+        let mut new_lines: Vec<String> = Vec::new();
+
+        // Filter out any existing RICE/STATE/STORAGE vars we're about to set.
+        let overwrite_keys = [
+            "RICE_STATE_URL",
+            "RICE_STATE_TOKEN",
+            "RICE_STORAGE_URL",
+            "RICE_STORAGE_TOKEN",
+            "STATE_INSTANCE_URL",
+            "STATE_AUTH_TOKEN",
+            "STORAGE_INSTANCE_URL",
+            "STORAGE_AUTH_TOKEN",
+        ];
+        for line in existing.lines() {
+            let trimmed = line.trim();
+            let dominated = overwrite_keys.iter().any(|k| {
+                trimmed.starts_with(&format!("{k}="))
+                    || trimmed.starts_with(&format!("export {k}="))
+            });
+            if !dominated {
+                new_lines.push(line.to_string());
+            }
+        }
+
+        // Append new values.
+        if !self.rice_setup_state_url.is_empty() {
+            new_lines.push(format!("RICE_STATE_URL=\"{}\"", self.rice_setup_state_url));
+        }
+        if !self.rice_setup_state_token.is_empty() {
+            new_lines.push(format!(
+                "RICE_STATE_TOKEN=\"{}\"",
+                self.rice_setup_state_token
+            ));
+        }
+        if !self.rice_setup_storage_url.is_empty() {
+            new_lines.push(format!(
+                "RICE_STORAGE_URL=\"{}\"",
+                self.rice_setup_storage_url
+            ));
+        }
+        if !self.rice_setup_storage_token.is_empty() {
+            new_lines.push(format!(
+                "RICE_STORAGE_TOKEN=\"{}\"",
+                self.rice_setup_storage_token
+            ));
+        }
+
+        // Write out.
+        match std::fs::File::create(env_path) {
+            Ok(mut file) => {
+                let content = new_lines.join("\n") + "\n";
+                if let Err(err) = file.write_all(content.as_bytes()) {
+                    self.log(LogLevel::Error, format!("Failed to write .env: {err}"));
+                    return;
+                }
+                self.log(LogLevel::Info, "✓ Saved configuration to .env".to_string());
+            }
+            Err(err) => {
+                self.log(LogLevel::Error, format!("Failed to create .env: {err}"));
+                return;
+            }
+        }
+
+        // Set env vars in the current process so reconnect picks them up.
+        // SAFETY: Memini is single-threaded at this point (no concurrent env reads).
+        unsafe {
+            if !self.rice_setup_state_url.is_empty() {
+                std::env::set_var("RICE_STATE_URL", &self.rice_setup_state_url);
+            }
+            if !self.rice_setup_state_token.is_empty() {
+                std::env::set_var("RICE_STATE_TOKEN", &self.rice_setup_state_token);
+            }
+            if !self.rice_setup_storage_url.is_empty() {
+                std::env::set_var("RICE_STORAGE_URL", &self.rice_setup_storage_url);
+            }
+            if !self.rice_setup_storage_token.is_empty() {
+                std::env::set_var("RICE_STORAGE_TOKEN", &self.rice_setup_storage_token);
+            }
+        }
+
+        // Reconnect Rice.
+        self.log(LogLevel::Info, "⟳ Reconnecting to Rice…".to_string());
+        self.rice = self.runtime.block_on(RiceStore::connect());
+        match &self.rice.status {
+            crate::rice::RiceStatus::Connected => {
+                self.log(
+                    LogLevel::Info,
+                    "🎉 Rice connected successfully! You're all set.".to_string(),
+                );
+            }
+            crate::rice::RiceStatus::Disabled(reason) => {
+                self.log(LogLevel::Warn, format!("Rice connection failed: {reason}"));
+                self.log(
+                    LogLevel::Info,
+                    "Check your URLs/tokens and try /rice setup again.".to_string(),
+                );
+            }
         }
     }
 

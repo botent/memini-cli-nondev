@@ -105,17 +105,25 @@ impl App {
 // ── /rice ────────────────────────────────────────────────────────────
 
 impl App {
-    pub(crate) fn handle_rice_command(&mut self) {
+    pub(crate) fn handle_rice_command(&mut self, args: Vec<&str>) {
+        if !args.is_empty() && args[0] == "setup" {
+            self.start_rice_setup();
+            return;
+        }
+
         match &self.rice.status {
             RiceStatus::Connected => {
-                self.log(LogLevel::Info, "Rice is connected.".to_string());
+                self.log(LogLevel::Info, "🟢 Rice is connected.".to_string());
+                self.log(
+                    LogLevel::Info,
+                    format!("   Run ID: {}", self.rice.active_run_id()),
+                );
             }
             RiceStatus::Disabled(reason) => {
                 log_src!(self, LogLevel::Warn, format!("Rice disabled: {reason}"));
                 self.log(
                     LogLevel::Info,
-                    "Set STATE_INSTANCE_URL/STATE_AUTH_TOKEN in .env to enable Rice State."
-                        .to_string(),
+                    "Run /rice setup to configure Rice interactively.".to_string(),
                 );
             }
         };
