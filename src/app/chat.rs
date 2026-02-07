@@ -91,12 +91,12 @@ impl App {
             }
         };
 
-        // Always inject the built-in spawn_agent tool so the LLM can
-        // delegate sub-tasks to parallel agent windows.
+        // Always inject built-in orchestration tools so the LLM can
+        // delegate sub-tasks to parallel agent windows and collect results.
         let spawn_tool = json!({
             "type": "function",
             "name": "spawn_agent",
-            "description": "Spawn an independent sub-agent that runs in its own window in the user's grid layout. Use this to delegate sub-tasks that can run in parallel. Each agent gets its own memory context and streams output in real time.",
+            "description": "Spawn an independent sub-agent that runs in its own window in the user's grid layout. Each agent gets its own MCP connection, memory context, and full tool loop. Use this to run tasks in PARALLEL across different MCP servers. Pass a coordination_key so you can later collect results with collect_results.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -106,13 +106,38 @@ impl App {
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "The detailed task prompt for the sub-agent. Be specific about what it should do."
+                        "description": "The detailed task prompt for the sub-agent. Be specific about what it should do and which tools to use."
+                    },
+                    "mcp_server": {
+                        "type": "string",
+                        "description": "Optional. The MCP server id to give this agent access to. If omitted, the agent gets access to ALL connected MCP servers."
+                    },
+                    "coordination_key": {
+                        "type": "string",
+                        "description": "A shared key to group parallel agents. Use the same key for agents whose results you want to collect together via collect_results."
                     }
                 },
                 "required": ["label", "prompt"]
             }
         });
-        tools.get_or_insert_with(Vec::new).push(spawn_tool);
+        let collect_tool = json!({
+            "type": "function",
+            "name": "collect_results",
+            "description": "Collect results from previously spawned agents that share a coordination_key. Returns all finished agent outputs stored in Rice state. Use this after spawning parallel agents to gather and synthesize their results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "coordination_key": {
+                        "type": "string",
+                        "description": "The coordination key that was passed to spawn_agent."
+                    }
+                },
+                "required": ["coordination_key"]
+            }
+        });
+        let builtin_tools = tools.get_or_insert_with(Vec::new);
+        builtin_tools.push(spawn_tool);
+        builtin_tools.push(collect_tool);
 
         // Initial LLM request.
         let mut response =
@@ -151,6 +176,8 @@ impl App {
                 self.log(LogLevel::Info, format!("Calling tool: {}", call.name));
                 let tool_output = if call.name == "spawn_agent" {
                     self.handle_spawn_agent_tool(&call)
+                } else if call.name == "collect_results" {
+                    self.handle_collect_results_tool(&call)
                 } else {
                     match self.call_mcp_tool_value(&call.name, call.arguments) {
                         Ok(value) => {
@@ -310,8 +337,8 @@ impl App {
     }
 
     /// Handle the built-in `spawn_agent` tool call from the LLM.
-    /// Creates an agent window and spawns the background task, returning
-    /// a JSON status string to feed back to the model.
+    /// Creates an agent window and spawns the background task with MCP
+    /// tool access, returning a JSON status string to feed back to the model.
     fn handle_spawn_agent_tool(&mut self, call: &ToolCall) -> String {
         let label = call
             .arguments
@@ -322,6 +349,17 @@ impl App {
         let prompt = call
             .arguments
             .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mcp_server_filter = call
+            .arguments
+            .get("mcp_server")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let coordination_key = call
+            .arguments
+            .get("coordination_key")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -349,6 +387,11 @@ impl App {
         let idx = self.agent_windows.len().saturating_sub(1);
         self.grid_selected = idx;
 
+        // Build MCP snapshots from active connections so the agent can
+        // open its own independent connections.
+        let mcp_snapshots = self.build_mcp_snapshots(mcp_server_filter.as_deref());
+        let has_mcp = !mcp_snapshots.is_empty();
+
         // Spawn the background task.
         let tx = self.daemon_tx.clone();
         let openai = self.openai.clone();
@@ -356,25 +399,133 @@ impl App {
         let rice_handle = self.runtime.spawn(crate::rice::RiceStore::connect());
         let persona = self.active_agent.persona.clone();
 
-        daemon::spawn_agent_window(
-            window_id,
-            persona,
-            prompt,
-            tx,
-            openai,
-            key,
-            rice_handle,
-            self.runtime.handle().clone(),
-        );
+        if has_mcp {
+            daemon::spawn_agent_window_with_mcp(
+                window_id,
+                coordination_key.clone(),
+                persona,
+                prompt,
+                mcp_snapshots,
+                tx,
+                openai,
+                key,
+                rice_handle,
+                self.runtime.handle().clone(),
+            );
+        } else {
+            daemon::spawn_agent_window(
+                window_id,
+                persona,
+                prompt,
+                tx,
+                openai,
+                key,
+                rice_handle,
+                self.runtime.handle().clone(),
+            );
+        }
 
         self.log(
             LogLevel::Info,
-            format!("LLM spawned agent: {label} (window #{window_id})"),
+            format!(
+                "LLM spawned agent: {label} (window #{window_id}){}",
+                if has_mcp { " [with MCP tools]" } else { "" }
+            ),
         );
 
         format!(
-            r#"{{"status":"spawned","window_id":{window_id},"label":"{}"}}"#,
-            label
+            r#"{{"status":"spawned","window_id":{window_id},"label":"{label}","has_mcp":{has_mcp},"coordination_key":"{coordination_key}"}}"#,
         )
+    }
+
+    /// Build [`McpServerSnapshot`]s from the currently active MCP connections,
+    /// optionally filtering to a single server id.
+    fn build_mcp_snapshots(&self, server_filter: Option<&str>) -> Vec<daemon::McpServerSnapshot> {
+        let mut snapshots = Vec::new();
+        for (id, conn) in &self.mcp_connections {
+            if let Some(filter) = server_filter {
+                if id != filter {
+                    continue;
+                }
+            }
+            // Resolve the bearer token the same way the main connect logic does.
+            let bearer = self.local_mcp_store.tokens.get(id).cloned().or_else(|| {
+                conn.server
+                    .auth
+                    .as_ref()
+                    .and_then(|a| a.bearer_token.clone())
+                    .or_else(|| {
+                        conn.server
+                            .auth
+                            .as_ref()
+                            .and_then(|a| a.bearer_env.as_ref())
+                            .and_then(|env_key| std::env::var(env_key).ok())
+                    })
+            });
+
+            // Pre-build OpenAI tool definitions as a fallback.
+            let openai_tools =
+                mcp::tools_to_openai_namespaced(&conn.server, &conn.tool_cache).unwrap_or_default();
+
+            snapshots.push(daemon::McpServerSnapshot {
+                server: conn.server.clone(),
+                bearer,
+                openai_tools,
+            });
+        }
+        snapshots
+    }
+
+    /// Handle the built-in `collect_results` tool call.
+    /// Reads finished agent results from Rice state variables.
+    fn handle_collect_results_tool(&mut self, call: &ToolCall) -> String {
+        let coordination_key = call
+            .arguments
+            .get("coordination_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if coordination_key.is_empty() {
+            return r#"{"error":"coordination_key is required"}"#.to_string();
+        }
+
+        // Collect results from Rice state for each agent window.
+        let mut results: Vec<Value> = Vec::new();
+        for window in &self.agent_windows {
+            let coord_var = format!("agent_result:{}:{}", coordination_key, window.id);
+            match self.runtime.block_on(self.rice.get_variable(&coord_var)) {
+                Ok(Some(value)) => {
+                    results.push(value);
+                }
+                _ => {
+                    // Agent hasn't finished yet or wasn't part of this group.
+                    if window.status == daemon::AgentWindowStatus::Thinking {
+                        results.push(json!({
+                            "window_id": window.id,
+                            "label": window.label,
+                            "status": "still_running",
+                        }));
+                    }
+                }
+            }
+        }
+
+        let summary = json!({
+            "coordination_key": coordination_key,
+            "agent_count": results.len(),
+            "results": results,
+        });
+
+        self.log(
+            LogLevel::Info,
+            format!(
+                "Collected {} result(s) for coordination key '{coordination_key}'.",
+                results.len()
+            ),
+        );
+
+        serde_json::to_string(&summary)
+            .unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string())
     }
 }

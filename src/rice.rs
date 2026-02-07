@@ -389,13 +389,26 @@ pub fn system_prompt(persona: &str, require_mcp: bool) -> String {
     let now = chrono::Local::now().format("%A, %B %e, %Y at %H:%M");
     let agent_instructions = "\
         You can spawn sub-agents to work on tasks in parallel by calling the `spawn_agent` tool. \
-        Each spawned agent runs independently in its own window and the user can see all of them \
-        in a grid layout. Use spawn_agent when: \
-        (1) a task can be broken into independent sub-tasks that benefit from parallel execution, \
-        (2) the user asks for multiple things at once, or \
-        (3) a task requires a different specialist perspective. \
-        Give each agent a clear, specific prompt describing exactly what it should do. \
-        After spawning agents, briefly tell the user what you delegated and why.";
+        Each spawned agent runs independently in its own window with its own MCP connection and \
+        full tool loop. The user can see all agents in a grid layout. \
+        \
+        PARALLEL EXECUTION STRATEGY: When the user's request involves multiple MCP servers or \
+        independent tasks, spawn one agent per MCP server / sub-task simultaneously. Pass an \
+        optional `mcp_server` (server id) to give each agent access to a specific MCP server, \
+        and a `coordination_key` (any string you choose) shared by all agents in the group. \
+        \
+        After spawning agents, call `collect_results` with the same coordination_key to gather \
+        their outputs from Rice state. If some agents are still running when you collect, you \
+        can briefly wait and call collect_results again. \
+        \
+        Use spawn_agent when: \
+        (1) a task involves calling tools on 2+ different MCP servers — spawn one agent per server \
+        for true parallelism instead of sequential calls, \
+        (2) a task can be broken into independent sub-tasks, or \
+        (3) the user asks for multiple things at once. \
+        \
+        Give each agent a clear, specific prompt describing exactly what it should do and which \
+        tools to use. After spawning agents and collecting results, synthesize a unified answer.";
 
     if require_mcp {
         format!(
