@@ -104,6 +104,8 @@ impl App {
             "Integrations",
             "  /mcp                    List available tools (MCP servers)",
             "  /mcp connect <id>       Connect to a tool",
+            "  /mcp auth <id>          Authenticate via browser (OAuth)",
+            "  /mcp auth-code <id> <x> Finish OAuth with URL/code",
             "  /mcp ask <prompt>       Chat using connected tools",
             "  /mcp tools              List tools on active connection",
             "  /mcp disconnect         Disconnect current tool",

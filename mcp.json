@@ -2,9 +2,21 @@
   "servers": [
     {
       "id": "granola",
+      "name": "Granola",
+      "transport": "http",
       "url": "https://mcp.granola.ai/mcp",
       "auth": {
         "type": "oauth_browser"
+      }
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "transport": "http",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": {
+        "type": "oauth_browser",
+        "notes": "Authenticate via browser OAuth flow."
       }
     }
   ]

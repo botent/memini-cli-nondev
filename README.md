@@ -4,7 +4,7 @@ A lightweight Rust TUI for connecting to MCP servers and persisting state with R
 
 ## What It Does
 
-- Loads hosted MCP servers from `mcp.json` (Granola included).
+- Loads hosted MCP servers from `mcp.json` (Granola + Notion included).
 - Lets you connect/select an MCP server with `/mcp connect <id>`.
 - Persists the OpenAI API key and active MCP selection in Rice State.
 - Provides a Ratatui-based command console.
@@ -81,9 +81,26 @@ Example (`mcp.json`):
         "notes": "Authenticate via browser OAuth flow.",
         "bearer_env": "GRANOLA_MCP_TOKEN"
       }
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "transport": "http",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": {
+        "type": "oauth_browser",
+        "notes": "Authenticate via browser OAuth flow."
+      }
     }
   ]
 }
+```
+
+Connect to Notion:
+
+```
+/mcp auth notion
+/mcp connect notion
 ```
 
 ## Commands

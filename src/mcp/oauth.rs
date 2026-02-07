@@ -509,12 +509,37 @@ async fn register_client(
     registration_endpoint: &str,
     redirect_uris: &[String],
 ) -> Result<(String, Option<String>)> {
+    let mut errors = Vec::new();
+
+    // Prefer public-client registration for native apps (PKCE + loopback redirect).
+    // Some IdPs also support confidential registration; fall back if needed.
+    for method in ["none", "client_secret_post"] {
+        match register_client_with_method(http, registration_endpoint, redirect_uris, method).await
+        {
+            Ok(result) => return Ok(result),
+            Err(err) => errors.push(format!("{method}: {err:#}")),
+        }
+    }
+
+    Err(anyhow!(
+        "Client registration failed. Tried: {}",
+        errors.join(" | ")
+    ))
+}
+
+async fn register_client_with_method(
+    http: &Client,
+    registration_endpoint: &str,
+    redirect_uris: &[String],
+    token_endpoint_auth_method: &str,
+) -> Result<(String, Option<String>)> {
     let body = serde_json::json!({
         "client_name": APP_NAME,
         "redirect_uris": redirect_uris,
-        "token_endpoint_auth_method": "client_secret_post",
+        "token_endpoint_auth_method": token_endpoint_auth_method,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
+        "application_type": "native",
     });
 
     let response = http
@@ -530,11 +555,12 @@ async fn register_client(
         .await
         .context("read registration response")?;
     if !status.is_success() {
-        return Err(anyhow!("Client registration failed: {text}"));
+        return Err(anyhow!("HTTP {status}: {text}"));
     }
 
     let parsed: RegistrationResponse = serde_json::from_str(&text).context("parse registration")?;
-    Ok((parsed.client_id, parsed.client_secret))
+    let client_secret = parsed.client_secret.filter(|s| !s.is_empty());
+    Ok((parsed.client_id, client_secret))
 }
 
 async fn exchange_code(
