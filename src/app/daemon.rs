@@ -52,10 +52,10 @@ pub enum AgentEvent {
     /// Markdown output from the main chat LLM.
     ChatMarkdown { label: String, body: String },
     /// The main chat turn finished — update thread + commit to Rice.
+    #[allow(dead_code)]
     ChatFinished {
         user_message: String,
         output_text: String,
-        #[allow(dead_code)]
         agent_name: String,
         thread_entries: Vec<Value>,
     },

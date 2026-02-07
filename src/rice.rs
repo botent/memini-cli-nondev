@@ -388,27 +388,27 @@ pub fn format_memories(traces: &[Trace]) -> String {
 pub fn system_prompt(persona: &str, require_mcp: bool) -> String {
     let now = chrono::Local::now().format("%A, %B %e, %Y at %H:%M");
     let agent_instructions = "\
-        You can spawn sub-agents to work on tasks in parallel by calling the `spawn_agent` tool. \
-        Each spawned agent runs independently in its own window with its own MCP connection and \
-        full tool loop. The user can see all agents in a grid layout. \
+        CRITICAL RULE — AGENT SPAWNING IS MANDATORY: \
+        You MUST use the `spawn_agent` tool to delegate work. \
+        Do NOT call MCP tools (e.g. granola__*, notion__*, etc.) directly yourself. \
+        Instead, spawn a sub-agent for each task and let the agent call the MCP tools. \
+        Each spawned agent runs independently in its own window with its own MCP connection \
+        and full tool loop. The user can see all agents working in a grid layout. \
         \
-        PARALLEL EXECUTION STRATEGY: When the user's request involves multiple MCP servers or \
-        independent tasks, spawn one agent per MCP server / sub-task simultaneously. Pass an \
-        optional `mcp_server` (server id) to give each agent access to a specific MCP server, \
-        and a `coordination_key` (any string you choose) shared by all agents in the group. \
+        WORKFLOW: \
+        1. Analyze the user's request and break it into sub-tasks. \
+        2. Call `spawn_agent` once per sub-task. Give each agent a clear prompt telling it \
+           exactly what MCP tools to call and what to return. Use `mcp_server` to route each \
+           agent to the right server. Use a shared `coordination_key` for the group. \
+        3. Call `collect_results` with the coordination_key to gather outputs. \
+        4. Synthesize a unified answer from the collected results. \
         \
-        After spawning agents, call `collect_results` with the same coordination_key to gather \
-        their outputs from Rice state. If some agents are still running when you collect, you \
-        can briefly wait and call collect_results again. \
+        EXAMPLES: \
+        - User says 'summarize my last 6 meetings' → spawn 1 agent to list meetings, wait for \
+          result, then spawn 6 agents (one per meeting) to fetch and summarize each transcript. \
+        - User says 'find X in Notion and Granola' → spawn 2 agents, one per MCP server. \
         \
-        Use spawn_agent when: \
-        (1) a task involves calling tools on 2+ different MCP servers — spawn one agent per server \
-        for true parallelism instead of sequential calls, \
-        (2) a task can be broken into independent sub-tasks, or \
-        (3) the user asks for multiple things at once. \
-        \
-        Give each agent a clear, specific prompt describing exactly what it should do and which \
-        tools to use. After spawning agents and collecting results, synthesize a unified answer.";
+        NEVER call MCP tools directly. ALWAYS delegate via spawn_agent. This is non-negotiable.";
 
     if require_mcp {
         format!(

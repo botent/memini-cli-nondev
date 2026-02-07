@@ -274,11 +274,14 @@ impl App {
 // ── Event handling ───────────────────────────────────────────────────
 
 impl App {
+    /// Called on every tick of the main loop (before draw) so that
+    /// background events are processed even when no user input arrives.
+    pub fn tick(&mut self) {
+        self.drain_daemon_events();
+    }
+
     /// Route a terminal event to the appropriate handler.
     pub fn handle_event(&mut self, event: Event) -> Result<()> {
-        // Drain any background agent results first.
-        self.drain_daemon_events();
-
         match event {
             Event::Key(key) => self.handle_key(key)?,
             Event::Mouse(mouse) => self.handle_mouse(mouse),
@@ -461,19 +464,13 @@ impl App {
         } else {
             // Prevent double-sends while the LLM is working.
             if self.chat_busy {
-                self.log(
-                    LogLevel::Info,
-                    "Still thinking… please wait.".to_string(),
-                );
+                self.log(LogLevel::Info, "Still thinking… please wait.".to_string());
                 return Ok(());
             }
 
             // Show the user's message immediately in the activity log
             // so they know the input was received.
-            self.log(
-                LogLevel::Info,
-                format!("› {line}"),
-            );
+            self.log(LogLevel::Info, format!("› {line}"));
             self.chat_busy = true;
             // Launch the chat on a background task — returns immediately.
             // chat_busy is cleared when we receive ChatFinished in drain_daemon_events.

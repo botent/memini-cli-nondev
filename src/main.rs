@@ -64,6 +64,10 @@ fn restore_terminal() -> Result<()> {
 /// Main draw → poll → handle loop.
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
     loop {
+        // Drain background events on EVERY tick so the UI updates in
+        // real-time even when no keyboard/mouse input is arriving.
+        app.tick();
+
         terminal.draw(|frame| app.draw(frame))?;
 
         if app.should_quit() {
