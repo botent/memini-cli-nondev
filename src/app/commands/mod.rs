@@ -96,7 +96,7 @@ impl App {
             "Agents (Multi-Instance)",
             "  /spawn <prompt>         Spin up a live agent window",
             "  /spawn list             Show all agent windows + status",
-            "  Arrow keys              Navigate the agent grid (when input is empty)",
+            "  Tab                     Cycle through agents in grid",
             "  Enter                   Open selected agent session",
             "  Esc                     Return to dashboard from agent session",
             "  Ctrl+1..9               Jump to agent session by index",

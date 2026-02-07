@@ -327,30 +327,7 @@ impl App {
 
     /// Key handling while on the dashboard (grid navigation + input).
     fn handle_dashboard_key(&mut self, code: KeyCode) -> Result<()> {
-        // If the input box is non-empty, typed characters go to input first.
         match code {
-            // ── Grid navigation (only when input is empty) ───────────
-            KeyCode::Left if self.input.is_empty() => {
-                if self.grid_selected % 3 > 0 {
-                    self.grid_selected -= 1;
-                }
-            }
-            KeyCode::Right if self.input.is_empty() => {
-                if self.grid_selected % 3 < 2 {
-                    self.grid_selected += 1;
-                }
-            }
-            KeyCode::Up if self.input.is_empty() => {
-                if self.grid_selected >= 3 {
-                    self.grid_selected -= 3;
-                }
-            }
-            KeyCode::Down if self.input.is_empty() => {
-                if self.grid_selected + 3 < 9 {
-                    self.grid_selected += 3;
-                }
-            }
-
             // Enter with empty input and a selected agent → open that session.
             KeyCode::Enter if self.input.is_empty() => {
                 if let Some(window) = self.agent_windows.get(self.grid_selected) {
@@ -394,8 +371,10 @@ impl App {
             KeyCode::PageUp => self.scroll_up(10),
             KeyCode::PageDown => self.scroll_down(10),
             KeyCode::Tab => {
-                // Tab on dashboard could cycle grid selection forward.
-                self.grid_selected = (self.grid_selected + 1) % 9;
+                // Tab on dashboard cycles grid selection forward.
+                if !self.agent_windows.is_empty() {
+                    self.grid_selected = (self.grid_selected + 1) % self.agent_windows.len().min(9);
+                }
             }
             _ => {}
         }

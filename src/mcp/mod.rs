@@ -4,7 +4,7 @@
 pub mod config;
 pub mod oauth;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use rmcp::model::{CallToolRequestParam, CallToolResult, Tool as McpTool};
 use rmcp::service::RunningService;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -32,7 +32,13 @@ pub async fn connect_http(server: &McpServer, bearer: Option<String>) -> Result<
     config.allow_stateless = true;
 
     if let Some(token) = bearer {
-        config.auth_header = Some(token);
+        // rmcp adds the "Bearer " prefix internally — pass the raw token.
+        let raw_token = token
+            .strip_prefix("Bearer ")
+            .or_else(|| token.strip_prefix("bearer "))
+            .unwrap_or(&token)
+            .to_string();
+        config.auth_header = Some(raw_token);
     }
 
     let transport = StreamableHttpClientTransport::from_config(config);

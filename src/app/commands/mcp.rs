@@ -186,7 +186,10 @@ impl App {
             }
             self.log(
                 LogLevel::Info,
-                format!("Using existing MCP connection to {}.", server.display_name()),
+                format!(
+                    "Using existing MCP connection to {}.",
+                    server.display_name()
+                ),
             );
             self.list_mcp_tools(Some(&server.id));
             return;
@@ -212,8 +215,7 @@ impl App {
         match connect_result {
             Ok(connection) => {
                 self.active_mcp = Some(server.clone());
-                self.mcp_connections
-                    .insert(server.id.clone(), connection);
+                self.mcp_connections.insert(server.id.clone(), connection);
 
                 let store_result = self.runtime.block_on(self.rice.set_variable(
                     ACTIVE_MCP_VAR,
@@ -279,7 +281,10 @@ impl App {
         if self.mcp_connections.remove(&id).is_some() {
             self.log(LogLevel::Info, format!("Closed MCP connection '{id}'."));
         } else {
-            self.log(LogLevel::Info, format!("No active MCP connection for '{id}'."));
+            self.log(
+                LogLevel::Info,
+                format!("No active MCP connection for '{id}'."),
+            );
         }
     }
 }
@@ -440,11 +445,7 @@ impl App {
         }
 
         if ids.is_empty() {
-            log_src!(
-                self,
-                LogLevel::Warn,
-                "No MCP server selected.".to_string()
-            );
+            log_src!(self, LogLevel::Warn, "No MCP server selected.".to_string());
             return;
         }
 
@@ -464,10 +465,7 @@ impl App {
                             format!("No tools reported by MCP server '{id}'."),
                         );
                     } else {
-                        self.log(
-                            LogLevel::Info,
-                            format!("MCP tools ({id}):"),
-                        );
+                        self.log(LogLevel::Info, format!("MCP tools ({id}):"));
                         for tool in tools {
                             let name = mcp::namespaced_tool_name(&id, tool.name.as_ref());
                             self.log(LogLevel::Info, format!("- {}", name));
@@ -569,10 +567,7 @@ impl App {
         if !self.mcp_connections.is_empty() {
             self.log(
                 LogLevel::Info,
-                format!(
-                    "Connected MCP servers: {}",
-                    self.mcp_connections.len()
-                ),
+                format!("Connected MCP servers: {}", self.mcp_connections.len()),
             );
             let mut entries: Vec<(String, String, usize)> = self
                 .mcp_connections
@@ -589,12 +584,7 @@ impl App {
             for (name, id, tool_count) in entries {
                 self.log(
                     LogLevel::Info,
-                    format!(
-                        "- {} ({}) [{} tools]",
-                        name,
-                        id,
-                        tool_count
-                    ),
+                    format!("- {} ({}) [{} tools]", name, id, tool_count),
                 );
             }
             if let Some(server) = &self.active_mcp {
@@ -743,6 +733,9 @@ impl App {
                     self.store_mcp_client_id(&server.id, client_id, auth);
                 }
                 self.log(LogLevel::Info, "OAuth complete. Token stored.".to_string());
+                // Auto-connect now that we have the token.
+                let server_id = server.id.clone();
+                self.connect_mcp(&server_id);
             }
             Err(err) => {
                 log_src!(
