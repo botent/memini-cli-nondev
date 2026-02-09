@@ -1,4 +1,4 @@
-//! Terminal UI rendering — dashboard grid, agent sessions, and status bar.
+//! Terminal UI rendering — dashboard panels, agent sessions, and status bar.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
@@ -16,7 +16,7 @@ use super::daemon::AgentWindowStatus;
 /// Animated spinner frames for the thinking indicator.
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Gradient accent colors for grid cards.
+/// Accent colors for dashboard agent rows/cards.
 const ACCENT_COLORS: &[Color] = &[
     Color::Rgb(0, 255, 136),   // green
     Color::Rgb(0, 210, 255),   // cyan
@@ -29,7 +29,7 @@ const ACCENT_COLORS: &[Color] = &[
     Color::Rgb(220, 20, 60),   // crimson
 ];
 
-/// Fun idle messages for empty grid cells.
+/// Fun idle messages for empty live-agent states.
 const EMPTY_HINTS: &[&str] = &[
     "awaiting orders…",
     "ready for action",
@@ -62,7 +62,7 @@ impl App {
 
     // ── Dashboard view ───────────────────────────────────────────────
 
-    /// Home screen: status bar, activity log (compact) + 3×3 agent grid, input prompt, footer.
+    /// Home screen: status bar, activity log, agent panels, input prompt, footer.
     fn draw_dashboard(&mut self, frame: &mut Frame<'_>) {
         let rows = Layout::default()
             .direction(Direction::Vertical)
@@ -77,14 +77,14 @@ impl App {
         // ── Status bar ───────────────────────────────────────────────
         self.draw_status_bar(frame, rows[0]);
 
-        // ── Main area: activity log (left) + agent grid (right) ──────
+        // ── Main area: activity log (left) + agent overview (right) ──
         {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
                 .split(rows[1]);
             self.draw_activity_log(frame, cols[0]);
-            self.draw_agent_grid(frame, cols[1]);
+            self.draw_agent_overview(frame, cols[1]);
         }
 
         // ── Input prompt ─────────────────────────────────────────────
@@ -141,166 +141,191 @@ impl App {
         self.draw_footer(frame, rows[3]);
     }
 
-    // ── Agent grid (3×3) ─────────────────────────────────────────────
+    // ── Agent Overview (dashboard right pane) ───────────────────────
 
-    /// Render the 3×3 grid of agent cards in the dashboard.
-    fn draw_agent_grid(&self, frame: &mut Frame<'_>, area: Rect) {
-        let grid_rows = Layout::default()
+    /// Render the right dashboard pane: running background agents + live windows.
+    fn draw_agent_overview(&self, frame: &mut Frame<'_>, area: Rect) {
+        if area.height < 8 {
+            self.draw_live_agent_rows(frame, area);
+            return;
+        }
+
+        let desired_top = (self.daemon_handles.len() as u16).saturating_add(3);
+        let min_top = 4u16;
+        let max_top = area.height.saturating_sub(5).max(min_top);
+        let top_height = desired_top.clamp(min_top, max_top);
+
+        let split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-            ])
+            .constraints([Constraint::Length(top_height), Constraint::Min(3)])
             .split(area);
 
-        for row in 0..3u16 {
-            let grid_cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Ratio(1, 3),
-                    Constraint::Ratio(1, 3),
-                    Constraint::Ratio(1, 3),
-                ])
-                .split(grid_rows[row as usize]);
-
-            for col in 0..3u16 {
-                let cell_idx = (row * 3 + col) as usize;
-                let cell_area = grid_cols[col as usize];
-                let is_selected = cell_idx == self.grid_selected;
-
-                if let Some(window) = self.agent_windows.get(cell_idx) {
-                    self.draw_agent_card(frame, cell_area, window, is_selected);
-                } else {
-                    self.draw_empty_card(frame, cell_area, cell_idx, is_selected);
-                }
-            }
-        }
+        self.draw_background_agent_rows(frame, split[0]);
+        self.draw_live_agent_rows(frame, split[1]);
     }
 
-    /// Render one agent card in the grid.
-    fn draw_agent_card(
-        &self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        window: &super::daemon::AgentWindow,
-        is_selected: bool,
-    ) {
-        let accent = self.accent_color(window.id);
-
-        let (status_icon, status_color) = match window.status {
-            AgentWindowStatus::Thinking => (self.spinner_frame(), Color::Yellow),
-            AgentWindowStatus::Done => ("✓", Color::Rgb(0, 255, 136)),
-            AgentWindowStatus::WaitingForInput => ("◈", Color::Rgb(255, 105, 180)),
-        };
-
-        let title = format!(" #{} {} {} ", window.id, status_icon, window.label);
-
-        let border_style = if is_selected {
-            Style::default().fg(accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(status_color)
-        };
-
-        // Build card content: prompt preview + last few output lines.
+    fn draw_background_agent_rows(&self, frame: &mut Frame<'_>, area: Rect) {
         let inner_height = area.height.saturating_sub(2) as usize;
         let mut lines: Vec<Line> = Vec::new();
 
-        // Prompt preview (first line).
-        let preview: String = window.prompt.chars().take(40).collect();
-        lines.push(Line::from(Span::styled(
-            format!(" {preview}…"),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )));
-
-        // Status line.
-        let status_text = match window.status {
-            AgentWindowStatus::Thinking => format!("{} working…", self.spinner_frame()),
-            AgentWindowStatus::Done => "✓ done".to_string(),
-            AgentWindowStatus::WaitingForInput => "◈ needs input".to_string(),
-        };
-        lines.push(Line::from(Span::styled(
-            format!(" {status_text}"),
-            Style::default().fg(status_color),
-        )));
-
-        // Tail of output.
-        let remaining = inner_height.saturating_sub(lines.len());
-        if remaining > 0 {
-            let tail: Vec<&String> = window
-                .output_lines
+        if self.daemon_handles.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No running background agents.",
+                Style::default().fg(Color::Rgb(120, 120, 120)),
+            )));
+            lines.push(Line::from(Span::styled(
+                " Use /auto templates or /auto scaffold repo-watch",
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            )));
+        } else {
+            let mut tasks: Vec<_> = self
+                .daemon_handles
                 .iter()
-                .rev()
-                .take(remaining)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
+                .map(|handle| {
+                    (
+                        handle.def.name.clone(),
+                        handle.def.interval_secs,
+                        handle.def.tools.clone(),
+                        handle.def.prompt.clone(),
+                        handle.def.paused,
+                    )
+                })
                 .collect();
-            for s in tail {
-                let truncated: String = s.chars().take(50).collect();
+            tasks.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (idx, (name, interval, tools, prompt, paused)) in tasks.into_iter().enumerate() {
+                if idx >= inner_height {
+                    break;
+                }
+                let icon = if paused { "⏸" } else { "▶" };
+                let color = if paused {
+                    Color::DarkGray
+                } else {
+                    Color::Yellow
+                };
+                let tools_label = if tools.is_empty() {
+                    "local(default)".to_string()
+                } else if tools.len() == 1 {
+                    tools[0].clone()
+                } else {
+                    format!("{}+{}", tools[0], tools.len() - 1)
+                };
+                let preview: String = prompt.chars().take(46).collect();
+                let ellipsis = if prompt.chars().count() > 46 {
+                    "…"
+                } else {
+                    ""
+                };
                 lines.push(Line::from(Span::styled(
-                    format!(" {truncated}"),
-                    Style::default().fg(Color::White),
+                    format!(" {icon} {name} [{interval}s, {tools_label}] — {preview}{ellipsis}"),
+                    Style::default().fg(color),
                 )));
+            }
+
+            if self.daemon_handles.len() > inner_height && !lines.is_empty() {
+                let hidden = self.daemon_handles.len() - inner_height;
+                if let Some(last) = lines.last_mut() {
+                    *last = Line::from(Span::styled(
+                        format!(" … and {hidden} more"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
             }
         }
 
-        let card = Paragraph::new(Text::from(lines)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(Span::styled(title, Style::default().fg(status_color))),
-        );
-        frame.render_widget(card, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(Span::styled(
+                format!(" ⚙ Auto Agents ({}) ", self.daemon_handles.len()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
-    /// Render an empty grid cell placeholder.
-    fn draw_empty_card(
-        &self,
-        frame: &mut Frame<'_>,
-        area: Rect,
-        cell_idx: usize,
-        is_selected: bool,
-    ) {
-        let accent = self.accent_color(cell_idx);
-        let hint_text = EMPTY_HINTS[cell_idx % EMPTY_HINTS.len()];
+    fn draw_live_agent_rows(&self, frame: &mut Frame<'_>, area: Rect) {
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let mut lines: Vec<Line> = Vec::new();
 
-        let border_style = if is_selected {
-            Style::default().fg(accent)
+        if self.agent_windows.is_empty() {
+            let hint = EMPTY_HINTS[(self.tick_count as usize / 10) % EMPTY_HINTS.len()];
+            lines.push(Line::from(Span::styled(
+                " No live agent windows yet.",
+                Style::default().fg(Color::Rgb(120, 120, 120)),
+            )));
+            lines.push(Line::from(Span::styled(
+                " Use /spawn <prompt> to launch one.",
+                Style::default().fg(Color::Rgb(0, 210, 255)),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(" Hint: {hint}"),
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            )));
         } else {
-            Style::default().fg(Color::Rgb(50, 50, 50))
-        };
+            let selected_idx = self.grid_selected.min(self.agent_windows.len() - 1);
+            let start = selected_idx.saturating_sub(inner_height.saturating_sub(1));
+            for (idx, window) in self
+                .agent_windows
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(inner_height)
+            {
+                let (status_icon, status_color, status_text) = match window.status {
+                    AgentWindowStatus::Thinking => {
+                        (self.spinner_frame(), Color::Yellow, "thinking")
+                    }
+                    AgentWindowStatus::Done => ("✓", Color::Rgb(0, 255, 136), "done"),
+                    AgentWindowStatus::WaitingForInput => {
+                        ("◈", Color::Rgb(255, 105, 180), "needs-input")
+                    }
+                };
+                let preview: String = window.prompt.chars().take(44).collect();
+                let ellipsis = if window.prompt.chars().count() > 44 {
+                    "…"
+                } else {
+                    ""
+                };
+                let row = format!(
+                    " #{} {} {} [{}] — {}{}",
+                    window.id, status_icon, window.label, status_text, preview, ellipsis
+                );
+                let style = if idx == selected_idx {
+                    Style::default()
+                        .fg(self.accent_color(window.id))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(status_color)
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
 
-        let hint = if is_selected {
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  /spawn <prompt>",
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
-                    format!("  {hint_text}"),
-                    Style::default().fg(Color::Rgb(80, 80, 80)),
-                )),
-            ]
-        } else {
-            vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {hint_text}"),
-                    Style::default().fg(Color::Rgb(50, 50, 50)),
-                )),
-            ]
-        };
+            if self.agent_windows.len() > start + lines.len() && !lines.is_empty() {
+                let hidden = self.agent_windows.len() - (start + lines.len());
+                if let Some(last) = lines.last_mut() {
+                    *last = Line::from(Span::styled(
+                        format!(" … and {hidden} more live windows"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+        }
 
-        let card = Paragraph::new(Text::from(hint)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
-        frame.render_widget(card, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(0, 210, 255)))
+            .title(Span::styled(
+                format!(
+                    " ▣ Live Agents ({}) [Tab:select Enter:open] ",
+                    self.agent_windows.len()
+                ),
+                Style::default()
+                    .fg(Color::Rgb(0, 210, 255))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
     }
 
     // ── Agent session view ───────────────────────────────────────────

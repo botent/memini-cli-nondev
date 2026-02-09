@@ -110,7 +110,7 @@ impl App {
             "  /reply <id|next> <msg>  Reply from the main input box",
             "  #<id> <msg>             Inline reply shortcut",
             "  (plain text)            Sends to oldest waiting agent first (FIFO)",
-            "  Tab                     Cycle through agents in grid",
+            "  Tab                     Cycle through agents on dashboard",
             "  Enter                   Open selected agent session",
             "  Esc                     Return to dashboard from agent session",
             "  Ctrl+1..9               Jump to agent session by index",

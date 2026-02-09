@@ -113,7 +113,7 @@ pub struct App {
     pub(crate) focused_window: Option<usize>, // id of the focused window
     // Dashboard grid navigation
     pub(crate) view_mode: ViewMode,
-    pub(crate) grid_selected: usize, // index into grid cells (0..8 for 3×3)
+    pub(crate) grid_selected: usize, // selected live-agent row index on dashboard
     // Chat-in-progress flag (prevents double-sends and shows thinking UI)
     pub(crate) chat_busy: bool,
     // Tick counter for animations (incremented every frame)
@@ -469,8 +469,12 @@ impl App {
         Ok(())
     }
 
-    /// Key handling while on the dashboard (grid navigation + input).
+    /// Key handling while on the dashboard (agent selection + input).
     fn handle_dashboard_key(&mut self, code: KeyCode) -> Result<()> {
+        if !self.agent_windows.is_empty() && self.grid_selected >= self.agent_windows.len() {
+            self.grid_selected = self.agent_windows.len() - 1;
+        }
+
         match code {
             // Enter with empty input and a selected agent → open that session.
             KeyCode::Enter if self.input.is_empty() => {
@@ -518,9 +522,9 @@ impl App {
             KeyCode::PageUp => self.scroll_up(10),
             KeyCode::PageDown => self.scroll_down(10),
             KeyCode::Tab => {
-                // Tab on dashboard cycles grid selection forward.
+                // Tab on dashboard cycles live-agent selection forward.
                 if !self.agent_windows.is_empty() {
-                    self.grid_selected = (self.grid_selected + 1) % self.agent_windows.len().min(9);
+                    self.grid_selected = (self.grid_selected + 1) % self.agent_windows.len();
                 }
             }
             _ => {}
