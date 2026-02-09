@@ -477,16 +477,6 @@ impl App {
         remaining
     }
 
-    fn move_live_agent_selection(&mut self, delta: isize) {
-        if self.agent_windows.is_empty() {
-            return;
-        }
-        let len = self.agent_windows.len() as isize;
-        let current = self.grid_selected.min(self.agent_windows.len() - 1) as isize;
-        let next = (current + delta).clamp(0, len.saturating_sub(1));
-        self.grid_selected = next as usize;
-    }
-
     fn cycle_live_agent_selection(&mut self, forward: bool) {
         if self.agent_windows.is_empty() {
             return;
@@ -657,20 +647,8 @@ impl App {
             KeyCode::End => self.move_cursor_end(),
             KeyCode::Up => self.history_prev(),
             KeyCode::Down => self.history_next(),
-            KeyCode::PageUp => {
-                if self.input.is_empty() && !self.agent_windows.is_empty() {
-                    self.move_live_agent_selection(-5);
-                } else {
-                    self.scroll_up(10);
-                }
-            }
-            KeyCode::PageDown => {
-                if self.input.is_empty() && !self.agent_windows.is_empty() {
-                    self.move_live_agent_selection(5);
-                } else {
-                    self.scroll_down(10);
-                }
-            }
+            KeyCode::PageUp => self.scroll_up(10),
+            KeyCode::PageDown => self.scroll_down(10),
             KeyCode::Tab => {
                 // Tab on dashboard cycles live-agent selection forward.
                 self.cycle_live_agent_selection(true);
@@ -820,26 +798,8 @@ impl App {
     /// Handle mouse events (scroll wheel / trackpad).
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                if matches!(self.view_mode, ViewMode::Dashboard)
-                    && !self.agent_windows.is_empty()
-                    && self.input.is_empty()
-                {
-                    self.move_live_agent_selection(-1);
-                } else {
-                    self.scroll_up(3);
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if matches!(self.view_mode, ViewMode::Dashboard)
-                    && !self.agent_windows.is_empty()
-                    && self.input.is_empty()
-                {
-                    self.move_live_agent_selection(1);
-                } else {
-                    self.scroll_down(3);
-                }
-            }
+            MouseEventKind::ScrollUp => self.scroll_up(3),
+            MouseEventKind::ScrollDown => self.scroll_down(3),
             _ => {}
         }
     }

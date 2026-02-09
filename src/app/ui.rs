@@ -62,7 +62,7 @@ impl App {
             .saturating_add(2)
     }
 
-    fn input_viewport_text(&self, inner_height: u16) -> (String, u16, u16) {
+    fn input_scroll_state(&self, inner_width: u16, inner_height: u16) -> (u16, u16, u16, u16) {
         let safe_cursor = self.cursor.min(self.input.len());
         let before = &self.input[..safe_cursor];
         let cursor_line = before.bytes().filter(|b| *b == b'\n').count();
@@ -71,15 +71,13 @@ impl App {
             .next()
             .map(|segment| segment.len())
             .unwrap_or(0);
-
-        let lines: Vec<&str> = self.input.split('\n').collect();
         let visible_height = inner_height.max(1) as usize;
-        let start_line = (cursor_line + 1).saturating_sub(visible_height);
-        let end_line = (start_line + visible_height).min(lines.len());
-        let text = lines[start_line..end_line].join("\n");
-        let cursor_y = cursor_line.saturating_sub(start_line) as u16;
-        let cursor_x = cursor_col as u16;
-        (text, cursor_x, cursor_y)
+        let visible_width = inner_width.max(1) as usize;
+        let scroll_y = cursor_line.saturating_sub(visible_height.saturating_sub(1));
+        let scroll_x = cursor_col.saturating_sub(visible_width.saturating_sub(1));
+        let cursor_y = cursor_line.saturating_sub(scroll_y) as u16;
+        let cursor_x = cursor_col.saturating_sub(scroll_x) as u16;
+        (scroll_y as u16, scroll_x as u16, cursor_x, cursor_y)
     }
     /// Render the full TUI frame, dispatching to the active view mode.
     pub fn draw(&mut self, frame: &mut Frame<'_>) {
@@ -156,13 +154,18 @@ impl App {
         };
 
         let input_inner_height = rows[2].height.saturating_sub(2);
-        let (input_view, cursor_x_raw, cursor_y_raw) = self.input_viewport_text(input_inner_height);
-        let input_panel = Paragraph::new(input_view).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(prompt_label)
-                .border_style(prompt_style),
-        );
+        let input_inner_width = rows[2].width.saturating_sub(2);
+        let (scroll_y, scroll_x, cursor_x_raw, cursor_y_raw) =
+            self.input_scroll_state(input_inner_width, input_inner_height);
+        let input_panel = Paragraph::new(self.input.as_str())
+            .scroll((scroll_y, scroll_x))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(prompt_label)
+                    .border_style(prompt_style),
+            );
         frame.render_widget(input_panel, rows[2]);
 
         let input_width = rows[2].width.saturating_sub(2);
@@ -473,13 +476,18 @@ impl App {
         };
 
         let input_inner_height = rows[2].height.saturating_sub(2);
-        let (input_view, cursor_x_raw, cursor_y_raw) = self.input_viewport_text(input_inner_height);
-        let input_panel = Paragraph::new(input_view).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(prompt_label)
-                .border_style(Style::default().fg(self.accent_color(window_id))),
-        );
+        let input_inner_width = rows[2].width.saturating_sub(2);
+        let (scroll_y, scroll_x, cursor_x_raw, cursor_y_raw) =
+            self.input_scroll_state(input_inner_width, input_inner_height);
+        let input_panel = Paragraph::new(self.input.as_str())
+            .scroll((scroll_y, scroll_x))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(prompt_label)
+                    .border_style(Style::default().fg(self.accent_color(window_id))),
+            );
         frame.render_widget(input_panel, rows[2]);
 
         let input_width = rows[2].width.saturating_sub(2);
@@ -728,6 +736,13 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" newline  ", Style::default().fg(Color::Rgb(80, 80, 80))),
+            Span::styled(
+                "PgUp/PgDn",
+                Style::default()
+                    .fg(Color::Rgb(0, 210, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" log scroll  ", Style::default().fg(Color::Rgb(80, 80, 80))),
             Span::styled(
                 "Esc",
                 Style::default()
