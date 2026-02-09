@@ -1020,6 +1020,8 @@ pub fn spawn_chat_task(
             });
         }
 
+        let memory_or_state_query = message_requests_memory_or_state(&message);
+
         // ── Step 3: Connect to MCP servers ───────────────────────────
         let mut connections: Vec<mcp::McpConnection> = Vec::new();
         let mut all_tools: Vec<Value> = Vec::new();
@@ -1076,12 +1078,28 @@ pub fn spawn_chat_task(
 
         // Add built-in tools (spawn_agent, collect_results).
         all_tools.extend(builtin_tools);
+        if memory_or_state_query {
+            // For pure memory/state asks, avoid orchestration detours.
+            all_tools.retain(|tool| {
+                let name = tool
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                name != "spawn_agent" && name != "collect_results"
+            });
+        }
 
         // ── Step 4: Build LLM input ──────────────────────────────────
         let memory_context = rice::format_memories(&memories);
         let sys = rice::system_prompt(&persona, !mcp_snapshots.is_empty());
         let mut input: Vec<Value> = Vec::new();
         input.push(json!({"role": "system", "content": sys}));
+        if memory_or_state_query {
+            input.push(json!({
+                "role": "system",
+                "content": "The user is asking about Rice memory/state. Use `rice_memories` and/or `rice_state_get` first. Avoid spawning file/workspace agents unless the user explicitly asks for file operations."
+            }));
+        }
         if !skill_context.trim().is_empty() {
             input.push(json!({"role": "system", "content": skill_context.clone()}));
         }
@@ -1158,6 +1176,10 @@ pub fn spawn_chat_task(
                     )
                 } else if call.name == "collect_results" {
                     handle_collect_results_bg(call, &mut rice).await
+                } else if call.name == "rice_memories" {
+                    handle_rice_memories_bg(call, &mut rice, memory_limit).await
+                } else if call.name == "rice_state_get" {
+                    handle_rice_state_get_bg(call, &mut rice).await
                 } else {
                     // MCP tool call.
                     if let Some((server_id, tool_name)) =
@@ -1247,6 +1269,54 @@ pub fn spawn_chat_task(
     });
 }
 
+fn message_requests_memory_or_state(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    let direct_markers = [
+        "recent memories",
+        "recent memory",
+        "my memories",
+        "show memories",
+        "conversation history",
+        "chat history",
+        "recent activity",
+        "what did we",
+        "what have i",
+        "worked on",
+        "rice state",
+        "state variable",
+    ];
+    if direct_markers.iter().any(|needle| text.contains(needle)) {
+        return true;
+    }
+
+    if ["memory", "memories", "remember"]
+        .iter()
+        .any(|needle| text.contains(needle))
+    {
+        return true;
+    }
+
+    if text.contains("state")
+        && ["rice", "session", "variable", "stored", "saved", "key"]
+            .iter()
+            .any(|needle| text.contains(needle))
+    {
+        return true;
+    }
+
+    let has_recent = text.contains("recent") || text.contains("latest");
+    has_recent
+        && [
+            "activity",
+            "history",
+            "conversation",
+            "what did we",
+            "worked on",
+        ]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
 /// Handle `spawn_agent` tool call from the background chat task.
 fn handle_spawn_agent_bg(
     call: &openai::ToolCall,
@@ -1320,6 +1390,91 @@ fn handle_spawn_agent_bg(
     )
 }
 
+/// Handle `rice_memories` tool call from the background chat task.
+async fn handle_rice_memories_bg(
+    call: &openai::ToolCall,
+    rice: &mut RiceStore,
+    default_limit: u64,
+) -> String {
+    let query = call
+        .arguments
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("recent activity")
+        .trim();
+    let query = if query.is_empty() {
+        "recent activity"
+    } else {
+        query
+    };
+    let limit = call
+        .arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default_limit)
+        .clamp(1, 50);
+
+    let traces = match rice.reminisce(vec![], limit, query).await {
+        Ok(value) => value,
+        Err(err) => {
+            return format!(
+                r#"{{"error":"rice_memories failed","detail":{}}}"#,
+                serde_json::to_string(&err.to_string())
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+            );
+        }
+    };
+
+    let memories: Vec<Value> = traces
+        .into_iter()
+        .map(|trace| {
+            json!({
+                "input": trace.input,
+                "action": trace.action,
+                "outcome": trace.outcome,
+            })
+        })
+        .collect();
+
+    serde_json::to_string(&json!({
+        "query": query,
+        "count": memories.len(),
+        "memories": memories,
+    }))
+    .unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string())
+}
+
+/// Handle `rice_state_get` tool call from the background chat task.
+async fn handle_rice_state_get_bg(call: &openai::ToolCall, rice: &mut RiceStore) -> String {
+    let key = call
+        .arguments
+        .get("key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if key.is_empty() {
+        return r#"{"error":"key is required"}"#.to_string();
+    }
+
+    match rice.get_variable(key).await {
+        Ok(Some(value)) => serde_json::to_string(&json!({
+            "key": key,
+            "exists": true,
+            "value": value,
+        }))
+        .unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string()),
+        Ok(None) => serde_json::to_string(&json!({
+            "key": key,
+            "exists": false,
+        }))
+        .unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string()),
+        Err(err) => format!(
+            r#"{{"error":"rice_state_get failed","detail":{}}}"#,
+            serde_json::to_string(&err.to_string()).unwrap_or_else(|_| "\"unknown\"".to_string())
+        ),
+    }
+}
+
 /// Handle `collect_results` tool call from the background chat task.
 async fn handle_collect_results_bg(call: &openai::ToolCall, rice: &mut RiceStore) -> String {
     let coordination_key = call
@@ -1350,4 +1505,36 @@ async fn handle_collect_results_bg(call: &openai::ToolCall, rice: &mut RiceStore
 
     serde_json::to_string(&summary)
         .unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::message_requests_memory_or_state;
+
+    #[test]
+    fn detects_memory_queries() {
+        assert!(message_requests_memory_or_state(
+            "show me my recent memories"
+        ));
+        assert!(message_requests_memory_or_state(
+            "What did we work on last week?"
+        ));
+    }
+
+    #[test]
+    fn detects_rice_state_queries() {
+        assert!(message_requests_memory_or_state(
+            "get rice state key openai_model"
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_recent_or_state_words() {
+        assert!(!message_requests_memory_or_state(
+            "show recent files in src"
+        ));
+        assert!(!message_requests_memory_or_state(
+            "refactor app state machine transitions"
+        ));
+    }
 }

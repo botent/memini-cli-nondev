@@ -57,8 +57,7 @@ impl App {
         daemon::spawn_chat_task(params, tx, openai, rice_handle, rt);
     }
 
-    /// The spawn_agent + collect_results tool definitions injected into
-    /// every chat request so the LLM can delegate work.
+    /// Built-in tool definitions injected into every chat request.
     fn builtin_tool_defs() -> Vec<Value> {
         let spawn_tool = json!({
             "type": "function",
@@ -102,7 +101,45 @@ impl App {
                 "required": ["coordination_key"]
             }
         });
-        vec![spawn_tool, collect_tool]
+        let rice_memories_tool = json!({
+            "type": "function",
+            "name": "rice_memories",
+            "description": "Fetch relevant memories from Rice. Use this for questions about past work, recent memory, or conversation history.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional memory search query. Use 'recent activity' when the user asks for recent memories."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional number of memories to return (default uses memory limit, max 50)."
+                    }
+                }
+            }
+        });
+        let rice_state_get_tool = json!({
+            "type": "function",
+            "name": "rice_state_get",
+            "description": "Read a Rice state variable by key.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "State variable key (e.g. openai_model, conversation_thread)."
+                    }
+                },
+                "required": ["key"]
+            }
+        });
+        vec![
+            spawn_tool,
+            collect_tool,
+            rice_memories_tool,
+            rice_state_get_tool,
+        ]
     }
 
     /// Build [`McpServerSnapshot`]s from the currently active MCP connections,
