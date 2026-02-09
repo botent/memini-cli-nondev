@@ -133,6 +133,9 @@ When multiple MCP servers are connected, tools are namespaced as `id__tool`
 - `/rice`
 - `/skills`
 - `/skills import <skills.sh-url | github-url>`
+- `/reply list`
+- `/reply <id|next> <message>`
+- `(plain text while asks pending) -> replies to oldest waiting agent (FIFO)`
 - `/clear`
 - `/quit`
 

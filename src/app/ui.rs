@@ -88,6 +88,12 @@ impl App {
         }
 
         // ── Input prompt ─────────────────────────────────────────────
+        let waiting_count = self
+            .agent_windows
+            .iter()
+            .filter(|w| w.status == AgentWindowStatus::WaitingForInput)
+            .count();
+
         let (prompt_label, prompt_style) = if let Some(ref step) = self.rice_setup_step {
             let label = match step {
                 RiceSetupStep::StateUrl => " 🔧 Rice State URL ",
@@ -95,15 +101,26 @@ impl App {
                 RiceSetupStep::StorageUrl => " 📦 Rice Storage URL ",
                 RiceSetupStep::StorageToken => " 🔑 Rice Storage Token ",
             };
-            (label, Style::default().fg(Color::Rgb(0, 210, 255)))
+            (
+                label.to_string(),
+                Style::default().fg(Color::Rgb(0, 210, 255)),
+            )
         } else if self.chat_busy {
             let spinner = self.spinner_frame();
             // Can't interpolate a dynamic spinner into a static str, so we use a fixed label.
             let _ = spinner;
-            (" ⟳ Thinking… ", Style::default().fg(Color::Yellow))
+            (
+                " ⟳ Thinking… ".to_string(),
+                Style::default().fg(Color::Yellow),
+            )
+        } else if waiting_count > 0 {
+            (
+                format!(" ◈ {waiting_count} ask(s) pending — Enter sends to oldest "),
+                Style::default().fg(Color::Rgb(255, 105, 180)),
+            )
         } else {
             (
-                " ❯ memini by ag\\i ",
+                " ❯ memini by ag\\i ".to_string(),
                 Style::default().fg(Color::Rgb(0, 255, 136)),
             )
         };

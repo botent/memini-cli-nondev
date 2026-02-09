@@ -35,6 +35,10 @@ All commands start with `/`. Anything without a `/` is sent as a chat message.
 | ----------------- | ------------------------------------------ |
 | `/spawn <prompt>` | Spin up a live agent window                |
 | `/spawn list`     | Show all agent windows and their status    |
+| `/reply list`     | Show agents currently waiting for input    |
+| `/reply <id\|next> <x>` | Reply to a waiting agent (override FIFO target) |
+| `#<id> <message>` | Inline shortcut to reply to a waiting agent |
+| _(plain text while pending asks)_ | Routes to the oldest waiting agent (FIFO) |
 | `Tab`             | Cycle through agents in the grid           |
 | `Enter`           | Open the selected agent session            |
 | `Esc`             | Return to dashboard from an agent session  |

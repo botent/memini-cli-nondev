@@ -19,10 +19,7 @@ pub fn normalize_url(raw: &str) -> String {
     if raw.contains("://") {
         return raw.to_string();
     }
-    let scheme = if raw.starts_with("localhost")
-        || raw.starts_with("127.")
-        || raw.contains(":80")
-    {
+    let scheme = if raw.starts_with("localhost") || raw.starts_with("127.") || raw.contains(":80") {
         "http"
     } else {
         "https"

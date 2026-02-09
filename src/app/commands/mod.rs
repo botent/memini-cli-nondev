@@ -8,7 +8,7 @@
 //! | `mcp`     | `/mcp` – connect, auth, tools, call   |
 //! | `openai`  | `/openai`, `/key`, `/rice`, bootstrap |
 //! | `agents`  | `/agent`, `/thread`, `/memory`        |
-//! | `daemons` | `/daemon`, `/auto`, `/spawn`          |
+//! | `daemons` | `/daemon`, `/auto`, `/spawn`, `/reply`|
 //! | `share`   | `/share`                              |
 //! | `skills`  | `/skills` — import/list skill packs   |
 
@@ -44,6 +44,7 @@ impl App {
             "/memory" | "/mem" => self.handle_memory_command(parts.collect()),
             "/daemon" | "/d" | "/auto" => self.handle_daemon_command(parts.collect()),
             "/spawn" => self.handle_spawn_command(parts.collect()),
+            "/reply" | "/r" => self.handle_reply_command(parts.collect()),
             "/share" => self.handle_share_command(parts.collect()),
             "/skills" => self.handle_skills_command(parts.collect()),
             "/panel" => {
@@ -99,6 +100,10 @@ impl App {
             "Agents (Multi-Instance)",
             "  /spawn <prompt>         Spin up a live agent window",
             "  /spawn list             Show all agent windows + status",
+            "  /reply list             Show agents waiting for input",
+            "  /reply <id|next> <msg>  Reply from the main input box",
+            "  #<id> <msg>             Inline reply shortcut",
+            "  (plain text)            Sends to oldest waiting agent first (FIFO)",
             "  Tab                     Cycle through agents in grid",
             "  Enter                   Open selected agent session",
             "  Esc                     Return to dashboard from agent session",

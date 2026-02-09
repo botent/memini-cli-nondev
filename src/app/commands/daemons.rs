@@ -266,6 +266,84 @@ impl App {
     }
 }
 
+// ── /reply ───────────────────────────────────────────────────────────
+
+impl App {
+    pub(crate) fn handle_reply_command(&mut self, args: Vec<&str>) {
+        if args.is_empty() || args[0] == "list" {
+            self.list_waiting_agent_questions();
+            return;
+        }
+
+        if args.len() < 2 {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "Usage: /reply <id|next> <message>  or  /reply list".to_string()
+            );
+            return;
+        }
+
+        let target = args[0];
+        let reply = args[1..].join(" ");
+        if reply.trim().is_empty() {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                "Reply message cannot be empty.".to_string()
+            );
+            return;
+        }
+
+        let window_id = if target.eq_ignore_ascii_case("next") {
+            self.first_waiting_window_id()
+        } else {
+            target.parse::<usize>().ok()
+        };
+
+        let Some(window_id) = window_id else {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Invalid target '{target}'. Use /reply list.")
+            );
+            return;
+        };
+
+        if !self.reply_to_agent_window(window_id, &reply) {
+            log_src!(
+                self,
+                LogLevel::Warn,
+                format!("Agent #{window_id} is not waiting for input.")
+            );
+        }
+    }
+
+    fn list_waiting_agent_questions(&mut self) {
+        let waiting = self.waiting_window_summaries();
+        if waiting.is_empty() {
+            self.log(
+                LogLevel::Info,
+                "No agents are waiting for input.".to_string(),
+            );
+            return;
+        }
+
+        self.log(
+            LogLevel::Info,
+            format!("Agents waiting for input ({}):", waiting.len()),
+        );
+        for (id, label, question) in waiting {
+            let preview: String = question.chars().take(140).collect();
+            self.log(LogLevel::Info, format!("  #{id} {label} -- {preview}"));
+        }
+        self.log(
+            LogLevel::Info,
+            "Reply with /reply <id|next> <message> or inline #<id> <message>.".to_string(),
+        );
+    }
+}
+
 // ── /spawn ───────────────────────────────────────────────────────────
 
 impl App {

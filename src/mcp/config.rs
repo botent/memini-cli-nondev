@@ -98,7 +98,10 @@ impl McpConfig {
 
         if let Some(config_path) = config_dir_file("mcp.json") {
             if config_path.exists() {
-                return Ok((Self::load_from_path(&config_path)?, McpSource::File(config_path)));
+                return Ok((
+                    Self::load_from_path(&config_path)?,
+                    McpSource::File(config_path),
+                ));
             }
         }
 

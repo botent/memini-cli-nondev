@@ -22,7 +22,7 @@ mod logging;
 mod store;
 mod ui;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
@@ -106,6 +106,8 @@ pub struct App {
     pub(crate) daemon_results: Vec<(String, String, String)>, // (task_name, message, timestamp)
     // Agent windows (live interactive agents in side panel)
     pub(crate) agent_windows: Vec<AgentWindow>,
+    // FIFO queue of window ids waiting for user input.
+    pub(crate) pending_input_queue: VecDeque<usize>,
     pub(crate) next_window_id: Arc<AtomicUsize>,
     pub(crate) focused_window: Option<usize>, // id of the focused window
     // Dashboard grid navigation
@@ -169,6 +171,7 @@ impl App {
             daemon_handles: Vec::new(),
             daemon_results: Vec::new(),
             agent_windows: Vec::new(),
+            pending_input_queue: VecDeque::new(),
             next_window_id: Arc::new(AtomicUsize::new(1)),
             focused_window: None,
             view_mode: ViewMode::Dashboard,
@@ -314,6 +317,72 @@ impl App {
     /// Whether the user has requested to quit.
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    fn is_window_waiting(&self, window_id: usize) -> bool {
+        self.agent_windows
+            .iter()
+            .any(|w| w.id == window_id && w.status == AgentWindowStatus::WaitingForInput)
+    }
+
+    fn enqueue_waiting_window(&mut self, window_id: usize) {
+        if !self.pending_input_queue.contains(&window_id) {
+            self.pending_input_queue.push_back(window_id);
+        }
+    }
+
+    fn dequeue_waiting_window(&mut self, window_id: usize) {
+        self.pending_input_queue.retain(|id| *id != window_id);
+    }
+
+    pub(crate) fn waiting_window_ids(&self) -> Vec<usize> {
+        self.pending_input_queue
+            .iter()
+            .copied()
+            .filter(|id| self.is_window_waiting(*id))
+            .collect()
+    }
+
+    pub(crate) fn first_waiting_window_id(&self) -> Option<usize> {
+        self.pending_input_queue
+            .iter()
+            .copied()
+            .find(|id| self.is_window_waiting(*id))
+    }
+
+    pub(crate) fn waiting_window_summaries(&self) -> Vec<(usize, String, String)> {
+        self.waiting_window_ids()
+            .into_iter()
+            .filter_map(|id| {
+                self.agent_windows.iter().find(|w| w.id == id).map(|w| {
+                    (
+                        w.id,
+                        w.label.clone(),
+                        w.pending_question
+                            .clone()
+                            .unwrap_or_else(|| "(question missing)".to_string()),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn parse_inline_agent_reply(line: &str) -> Option<(usize, String)> {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            return None;
+        }
+        let rest = &trimmed[1..];
+        let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digit_len == 0 {
+            return None;
+        }
+        let id: usize = rest[..digit_len].parse().ok()?;
+        let reply = rest[digit_len..].trim_start();
+        if reply.is_empty() {
+            return None;
+        }
+        Some((id, reply.to_string()))
     }
 
     pub(crate) fn reload_imported_skills(&mut self) -> Result<()> {
@@ -524,9 +593,27 @@ impl App {
             }
         }
 
+        // Inline single-box reply format: `#<id> your message`.
+        if let Some((window_id, reply)) = Self::parse_inline_agent_reply(&line) {
+            if !self.reply_to_agent_window(window_id, &reply) {
+                self.log(
+                    LogLevel::Warn,
+                    format!("Agent #{window_id} is not waiting for input. Use /reply list."),
+                );
+            }
+            return Ok(());
+        }
+
         if line.starts_with('/') {
             self.handle_command(&line)?;
         } else {
+            // FIFO mode: if any agents are waiting, route plain input to the
+            // oldest waiting request.
+            if let Some(window_id) = self.first_waiting_window_id() {
+                let _ = self.reply_to_agent_window(window_id, &line);
+                return Ok(());
+            }
+
             // Prevent double-sends while the LLM is working.
             if self.chat_busy {
                 self.log(LogLevel::Info, "Still thinking… please wait.".to_string());
@@ -645,6 +732,7 @@ impl App {
                         win.status = AgentWindowStatus::Thinking;
                         win.output_lines.push("-- started --".to_string());
                     }
+                    self.dequeue_waiting_window(window_id);
                 }
                 AgentEvent::Progress { window_id, line } => {
                     if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
@@ -661,6 +749,7 @@ impl App {
                         win.output_lines.push(format!("-- done at {timestamp} --"));
                         win.pending_question = None;
                     }
+                    self.dequeue_waiting_window(window_id);
                     // Also log to main chat.
                     let label = self
                         .agent_windows
@@ -674,15 +763,34 @@ impl App {
                     window_id,
                     question,
                 } => {
+                    let mut label = format!("Agent #{window_id}");
                     if let Some(win) = self.agent_windows.iter_mut().find(|w| w.id == window_id) {
                         win.status = AgentWindowStatus::WaitingForInput;
                         win.pending_question = Some(question.clone());
+                        label = win.label.clone();
                         win.output_lines
                             .push(format!(">> Waiting for your input: {question}"));
                     }
-                    // Auto-navigate into the agent session that needs input.
-                    self.focused_window = Some(window_id);
-                    self.view_mode = ViewMode::AgentSession(window_id);
+                    self.enqueue_waiting_window(window_id);
+                    self.log(
+                        LogLevel::Info,
+                        format!("◈ {label} (#{window_id}) needs input: {question}"),
+                    );
+                    let waiting_count = self.waiting_window_ids().len();
+                    if waiting_count <= 1 {
+                        self.log(
+                            LogLevel::Info,
+                            format!(
+                                "Reply in the main input box and press Enter, or use /reply {window_id} <message>."
+                            ),
+                        );
+                    } else {
+                        self.log(
+                            LogLevel::Info,
+                            "Multiple agents are waiting. Use /reply list, /reply <id|next> <message>, or inline #<id> <message>."
+                                .to_string(),
+                        );
+                    }
                 }
                 AgentEvent::DaemonResult {
                     task_name,
@@ -1023,6 +1131,7 @@ impl App {
             win.status = AgentWindowStatus::Thinking;
             win.pending_question = None;
         }
+        self.dequeue_waiting_window(window_id);
 
         let _persona = self
             .agent_windows
